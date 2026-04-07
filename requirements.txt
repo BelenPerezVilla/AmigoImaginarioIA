@@ -1,0 +1,11 @@
+# ============================================================
+# Dependencias del proyecto
+# - streamlit: interfaz web
+# - google-genai: SDK oficial de Gemini
+# - python-dotenv: carga variables desde .env
+# ============================================================
+
+streamlit>=1.42.0
+google-genai
+python-dotenv
+pypdf
