@@ -1,6 +1,7 @@
 # ============================================================
 # app.py
-# Fase 10:
+# Aplicación principal Streamlit del proyecto.
+# Incluye:
 # - autenticación con SQLite
 # - historial por usuario
 # - biblioteca estructurada
@@ -8,16 +9,22 @@
 # - importación / exportación de artículos
 # - generación de artículos desde documentos
 # - RAG simple para Biblioteca Inteligente
-# - feedback útil / no útil
-# - métricas básicas de utilidad
-# - sin use_container_width
+# - feedback y métricas
+# - Amigo Imaginario con nombre, memoria suave e iniciativas
+# - sesión de creación con avatar SVG personalizable
 # ============================================================
 
+# ------------------------------------------------------------
+# Importaciones estándar
+# ------------------------------------------------------------
 from datetime import datetime
 import csv
 import io
 import json
 
+# ------------------------------------------------------------
+# Importaciones de terceros
+# ------------------------------------------------------------
 import streamlit as st
 
 # ------------------------------------------------------------
@@ -39,6 +46,7 @@ from database.chat_db import (
     get_conversation_by_id,
     get_feedback_for_message,
     get_feedback_summary,
+    get_imaginary_friend_profile,
     get_latest_conversation_by_module,
     get_messages_by_conversation,
     import_articles,
@@ -54,13 +62,20 @@ from database.chat_db import (
     search_articles,
     set_user_admin_status,
     update_article,
+    update_friend_name,
+    update_friend_profile,
+    update_imaginary_friend_profile,
     update_title_if_default,
 )
 
 # ------------------------------------------------------------
-# Configuración visual y prompts
+# Configuración visual, prompts y ayudas del amigo imaginario
 # ------------------------------------------------------------
-from prompts import MODULE_INFO, MODULE_LABELS
+from prompts import (
+    MODULE_INFO,
+    MODULE_LABELS,
+    build_friend_initiatives,
+)
 
 # ------------------------------------------------------------
 # Servicios Gemini
@@ -75,6 +90,15 @@ from services.gemini_service import (
 # Utilidades para leer documentos subidos
 # ------------------------------------------------------------
 from utils.document_ingestion import extract_text_from_uploaded_file
+
+# ------------------------------------------------------------
+# Utilidades visuales para el avatar del amigo imaginario
+# ------------------------------------------------------------
+from utils.avatar_svg import (
+    AVATAR_FORM_OPTIONS,
+    DEFAULT_FRIEND_AVATAR,
+    build_friend_avatar_svg,
+)
 
 
 # ------------------------------------------------------------
@@ -92,12 +116,7 @@ st.set_page_config(
 # ------------------------------------------------------------
 def inicializar_estado() -> None:
     """
-    Inicializa variables necesarias en session_state para:
-    - autenticación
-    - conversación
-    - preferencias visuales
-    - biblioteca
-    - administración
+    Inicializa variables necesarias en session_state.
     """
     if "user_id" not in st.session_state:
         st.session_state.user_id = None
@@ -149,6 +168,23 @@ def inicializar_estado() -> None:
 
     if "admin_edit_article_id" not in st.session_state:
         st.session_state.admin_edit_article_id = None
+
+    # --------------------------------------------------------
+    # Estado del amigo imaginario
+    # --------------------------------------------------------
+    if "friend_name" not in st.session_state:
+        st.session_state.friend_name = "Lumi"
+
+    if "friend_profile" not in st.session_state:
+        st.session_state.friend_profile = {
+            "favorite_color": "",
+            "favorite_activity": "",
+            "encouragement_style": "",
+            "preferred_comfort": "cuentos"
+        }
+
+    if "friend_avatar" not in st.session_state:
+        st.session_state.friend_avatar = dict(DEFAULT_FRIEND_AVATAR)
 
 
 # ------------------------------------------------------------
@@ -266,20 +302,6 @@ def aplicar_estilos() -> None:
                 padding-top: 6px;
             }}
 
-            .auth-card {{
-                background-color: {bg_card};
-                border: 1px solid {border_card};
-                border-radius: 18px;
-                padding: 18px;
-                margin-bottom: 14px;
-            }}
-
-            .section-label {{
-                font-size: 0.95rem;
-                font-weight: 700;
-                margin-bottom: 0.35rem;
-            }}
-
             .sidebar-note {{
                 font-size: 0.92rem;
                 color: {text_muted};
@@ -340,7 +362,7 @@ def aplicar_estilos() -> None:
 # ------------------------------------------------------------
 def formatear_fecha(texto_fecha: str) -> str:
     """
-    Convierte una fecha SQLite a formato corto legible.
+    Convierte una fecha SQLite a formato corto.
     """
     try:
         fecha = datetime.strptime(texto_fecha, "%Y-%m-%d %H:%M:%S")
@@ -370,6 +392,19 @@ def iniciar_sesion(usuario: dict) -> None:
     st.session_state.username = usuario["username"]
     st.session_state.display_name = usuario["display_name"]
     st.session_state.is_admin = bool(usuario.get("is_admin", False))
+    st.session_state.friend_name = usuario.get("friend_name", "Lumi")
+    st.session_state.friend_profile = {
+        "favorite_color": usuario.get("favorite_color", ""),
+        "favorite_activity": usuario.get("favorite_activity", ""),
+        "encouragement_style": usuario.get("encouragement_style", ""),
+        "preferred_comfort": usuario.get("preferred_comfort", "cuentos"),
+    }
+
+    # --------------------------------------------------------
+    # Cargar avatar guardado del amigo imaginario
+    # --------------------------------------------------------
+    st.session_state.friend_avatar = get_imaginary_friend_profile(usuario["id"])
+
     st.session_state.modulo_actual = "amigo_imaginario"
     st.session_state.ultimo_modulo = "amigo_imaginario"
     st.session_state.conversation_id = None
@@ -388,6 +423,14 @@ def cerrar_sesion() -> None:
     st.session_state.username = None
     st.session_state.display_name = None
     st.session_state.is_admin = False
+    st.session_state.friend_name = "Lumi"
+    st.session_state.friend_profile = {
+        "favorite_color": "",
+        "favorite_activity": "",
+        "encouragement_style": "",
+        "preferred_comfort": "cuentos"
+    }
+    st.session_state.friend_avatar = dict(DEFAULT_FRIEND_AVATAR)
     st.session_state.modulo_actual = "amigo_imaginario"
     st.session_state.ultimo_modulo = "amigo_imaginario"
     st.session_state.conversation_id = None
@@ -403,7 +446,7 @@ def cerrar_sesion() -> None:
 def cargar_conversacion(conversation_id: int, user_id: int) -> None:
     """
     Carga una conversación del usuario a session_state.
-    También conserva el id de cada mensaje para permitir feedback.
+    También conserva los ids de mensaje para el feedback.
     """
     conversacion = get_conversation_by_id(conversation_id, user_id)
 
@@ -483,7 +526,7 @@ def asegurar_conversacion_activa(modulo: str, user_id: int) -> None:
 
 
 # ------------------------------------------------------------
-# Renderizar tarjeta estadística
+# Tarjeta estadística
 # ------------------------------------------------------------
 def render_stat_card(title: str, value: str, caption: str) -> None:
     """
@@ -584,7 +627,7 @@ def build_export_json(articles: list[dict]) -> bytes:
 
 
 # ------------------------------------------------------------
-# Parsear archivo subido para importación
+# Parsear archivo subido
 # ------------------------------------------------------------
 def parse_uploaded_articles(uploaded_file) -> list[dict]:
     """
@@ -614,12 +657,12 @@ def parse_uploaded_articles(uploaded_file) -> list[dict]:
 
 
 # ------------------------------------------------------------
-# Renderizar historial con feedback
+# Historial con feedback
 # ------------------------------------------------------------
 def render_chat_history_with_feedback(user_id: int, modulo_actual: str) -> None:
     """
-    Muestra el historial del chat y agrega st.feedback a las
-    respuestas del asistente que pueden calificarse.
+    Muestra el historial del chat y agrega feedback a las
+    respuestas del asistente.
     """
     for index, mensaje in enumerate(st.session_state.mensajes):
         with st.chat_message(mensaje["role"]):
@@ -667,7 +710,7 @@ def render_chat_history_with_feedback(user_id: int, modulo_actual: str) -> None:
 
 
 # ------------------------------------------------------------
-# Panel de métricas de feedback
+# Panel de métricas
 # ------------------------------------------------------------
 def render_feedback_metrics_panel() -> None:
     """
@@ -728,6 +771,311 @@ def render_feedback_metrics_panel() -> None:
 
 
 # ------------------------------------------------------------
+# Vista previa del avatar del amigo imaginario
+# ------------------------------------------------------------
+def render_friend_avatar_preview() -> None:
+    """
+    Renderiza el avatar actual del amigo imaginario usando SVG.
+    """
+    avatar_svg = build_friend_avatar_svg(
+        friend_name=st.session_state.friend_name,
+        avatar_profile=st.session_state.friend_avatar,
+        size=260
+    )
+
+    col_1, col_2, col_3 = st.columns([1, 2, 1])
+
+    with col_2:
+        st.image(
+            avatar_svg,
+            width="content"
+        )
+
+# ------------------------------------------------------------
+# Panel de memoria suave
+# ------------------------------------------------------------
+def render_friend_memory_panel(user_id: int) -> None:
+    """
+    Permite guardar gustos y preferencias suaves del vínculo.
+    """
+    st.markdown(
+        """
+        <div class="info-card">
+            <div class="info-title">Memoria suave del vínculo</div>
+            <div class="info-text">
+                Aquí puedes guardar pequeños gustos y formas de apoyo para que el amigo imaginario
+                responda de una forma más cercana y personal.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    with st.form("friend_memory_form"):
+        favorite_color = st.text_input(
+            "Color favorito",
+            value=st.session_state.friend_profile.get("favorite_color", ""),
+            placeholder="Ejemplo: azul, amarillo, morado"
+        )
+
+        favorite_activity = st.text_input(
+            "Actividad favorita",
+            value=st.session_state.friend_profile.get("favorite_activity", ""),
+            placeholder="Ejemplo: dibujar, bailar, construir, cantar"
+        )
+
+        encouragement_style = st.text_input(
+            "Cómo le gusta que lo animen",
+            value=st.session_state.friend_profile.get("encouragement_style", ""),
+            placeholder="Ejemplo: con palabras suaves, con abrazos imaginarios, con humor tierno"
+        )
+
+        preferred_comfort = st.selectbox(
+            "Qué prefiere cuando necesita apoyo",
+            options=["cuentos", "juegos", "respiraciones"],
+            index=["cuentos", "juegos", "respiraciones"].index(
+                st.session_state.friend_profile.get("preferred_comfort", "cuentos")
+            )
+        )
+
+        submit_memory = st.form_submit_button(
+            "Guardar recuerdos suaves",
+            width="stretch"
+        )
+
+        if submit_memory:
+            try:
+                update_friend_profile(
+                    user_id=user_id,
+                    favorite_color=favorite_color,
+                    favorite_activity=favorite_activity,
+                    encouragement_style=encouragement_style,
+                    preferred_comfort=preferred_comfort
+                )
+
+                st.session_state.friend_profile = {
+                    "favorite_color": favorite_color.strip(),
+                    "favorite_activity": favorite_activity.strip(),
+                    "encouragement_style": encouragement_style.strip(),
+                    "preferred_comfort": preferred_comfort.strip(),
+                }
+
+                st.success("Memoria suave guardada correctamente.")
+                st.rerun()
+
+            except ValueError as error:
+                st.error(str(error))
+
+
+# ------------------------------------------------------------
+# Panel de iniciativas del amigo imaginario
+# ------------------------------------------------------------
+def render_friend_initiatives_panel() -> str | None:
+    """
+    Muestra botones rápidos para que el Amigo Imaginario
+    inicie dinámicas suaves y personalizadas.
+
+    Retorna:
+        str | None: mensaje a enviar si se presionó un botón.
+    """
+    iniciativas = build_friend_initiatives(
+        friend_name=st.session_state.friend_name,
+        friend_profile=st.session_state.friend_profile
+    )
+
+    st.markdown(
+        f"""
+        <div class="info-card">
+            <div class="info-title">Ideas que puede iniciar {st.session_state.friend_name}</div>
+            <div class="info-text">
+                Puedes pedirle un cuento, un juego, una respiración o una sorpresa.
+                Estas opciones usan los gustos guardados para que la experiencia se sienta más personal.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    col_1, col_2, col_3, col_4, col_5 = st.columns(5)
+
+    mensaje_iniciativa = None
+
+    with col_1:
+        if st.button("Cuento", key="friend_init_cuento", width="stretch"):
+            mensaje_iniciativa = iniciativas["cuento"]
+
+    with col_2:
+        if st.button("Juego", key="friend_init_juego", width="stretch"):
+            mensaje_iniciativa = iniciativas["juego"]
+
+    with col_3:
+        if st.button("Respirar", key="friend_init_respiracion", width="stretch"):
+            mensaje_iniciativa = iniciativas["respiracion"]
+
+    with col_4:
+        if st.button("Ánimo", key="friend_init_animo", width="stretch"):
+            mensaje_iniciativa = iniciativas["animo"]
+
+    with col_5:
+        if st.button("Sorpresa", key="friend_init_sorpresa", width="stretch"):
+            mensaje_iniciativa = iniciativas["sorpresa"]
+
+    return mensaje_iniciativa
+
+
+# ------------------------------------------------------------
+# Panel de creación y personalización del amigo imaginario
+# ------------------------------------------------------------
+def render_friend_creation_panel(user_id: int) -> None:
+    """
+    Muestra una sesión de creación para el amigo imaginario:
+    nombre + avatar + guardado persistente.
+    """
+    st.markdown(
+        """
+        <div class="info-card">
+            <div class="info-title">Sesión de creación de tu amigo imaginario</div>
+            <div class="info-text">
+                Aquí puedes ponerle nombre y personalizar su avatar.
+                Cuando guardes, ese amigo aparecerá en el módulo de conversación.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    col_preview, col_form = st.columns([1.05, 1.35], gap="large")
+
+    with col_preview:
+        st.markdown("### Vista previa")
+        render_friend_avatar_preview()
+
+    with col_form:
+        with st.form("friend_creation_form"):
+            friend_name_input = st.text_input(
+                "Nombre del amigo imaginario",
+                value=st.session_state.friend_name,
+                max_chars=30,
+                placeholder="Ejemplo: Nube, Soli, Luno"
+            )
+
+            face_shape = st.selectbox(
+                "Forma de rostro",
+                options=AVATAR_FORM_OPTIONS["face_shape"],
+                index=AVATAR_FORM_OPTIONS["face_shape"].index(
+                    st.session_state.friend_avatar.get("face_shape", "redondo")
+                )
+            )
+
+            primary_color = st.selectbox(
+                "Color principal",
+                options=AVATAR_FORM_OPTIONS["primary_color"],
+                index=AVATAR_FORM_OPTIONS["primary_color"].index(
+                    st.session_state.friend_avatar.get("primary_color", "azul")
+                )
+            )
+
+            hair_style = st.selectbox(
+                "Tipo de cabello",
+                options=AVATAR_FORM_OPTIONS["hair_style"],
+                index=AVATAR_FORM_OPTIONS["hair_style"].index(
+                    st.session_state.friend_avatar.get("hair_style", "corto")
+                )
+            )
+
+            hair_color = st.selectbox(
+                "Color de cabello",
+                options=AVATAR_FORM_OPTIONS["hair_color"],
+                index=AVATAR_FORM_OPTIONS["hair_color"].index(
+                    st.session_state.friend_avatar.get("hair_color", "castano")
+                )
+            )
+
+            eye_style = st.selectbox(
+                "Ojos",
+                options=AVATAR_FORM_OPTIONS["eye_style"],
+                index=AVATAR_FORM_OPTIONS["eye_style"].index(
+                    st.session_state.friend_avatar.get("eye_style", "felices")
+                )
+            )
+
+            mouth_style = st.selectbox(
+                "Boca",
+                options=AVATAR_FORM_OPTIONS["mouth_style"],
+                index=AVATAR_FORM_OPTIONS["mouth_style"].index(
+                    st.session_state.friend_avatar.get("mouth_style", "sonrisa")
+                )
+            )
+
+            accessory = st.selectbox(
+                "Accesorio",
+                options=AVATAR_FORM_OPTIONS["accessory"],
+                index=AVATAR_FORM_OPTIONS["accessory"].index(
+                    st.session_state.friend_avatar.get("accessory", "estrella")
+                )
+            )
+
+            background_style = st.selectbox(
+                "Fondo",
+                options=AVATAR_FORM_OPTIONS["background_style"],
+                index=AVATAR_FORM_OPTIONS["background_style"].index(
+                    st.session_state.friend_avatar.get("background_style", "cielo")
+                )
+            )
+
+            submit_creation = st.form_submit_button(
+                "Guardar amigo imaginario",
+                width="stretch"
+            )
+
+            if submit_creation:
+                try:
+                    # ----------------------------------------
+                    # Guardar nombre
+                    # ----------------------------------------
+                    update_friend_name(
+                        user_id=user_id,
+                        friend_name=friend_name_input
+                    )
+
+                    # ----------------------------------------
+                    # Guardar avatar
+                    # ----------------------------------------
+                    update_imaginary_friend_profile(
+                        user_id=user_id,
+                        face_shape=face_shape,
+                        primary_color=primary_color,
+                        hair_style=hair_style,
+                        hair_color=hair_color,
+                        eye_style=eye_style,
+                        mouth_style=mouth_style,
+                        accessory=accessory,
+                        background_style=background_style
+                    )
+
+                    # ----------------------------------------
+                    # Refrescar estado en sesión
+                    # ----------------------------------------
+                    st.session_state.friend_name = friend_name_input.strip()
+                    st.session_state.friend_avatar = {
+                        "face_shape": face_shape,
+                        "primary_color": primary_color,
+                        "hair_style": hair_style,
+                        "hair_color": hair_color,
+                        "eye_style": eye_style,
+                        "mouth_style": mouth_style,
+                        "accessory": accessory,
+                        "background_style": background_style,
+                    }
+
+                    st.success("Tu amigo imaginario fue guardado correctamente.")
+                    st.rerun()
+
+                except ValueError as error:
+                    st.error(str(error))
+
+
+# ------------------------------------------------------------
 # Pantalla de autenticación
 # ------------------------------------------------------------
 def render_auth_screen() -> None:
@@ -738,17 +1086,17 @@ def render_auth_screen() -> None:
 
     st.markdown('<div class="main-title">Amigo Imaginario Neurodivergente</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="main-subtitle">Fase 10 · Feedback y métricas básicas</div>',
+        '<div class="main-subtitle">Fase 15.1 · Sesión de creación del amigo imaginario con avatar</div>',
         unsafe_allow_html=True
     )
 
     st.markdown(
         """
         <div class="hero-card">
-            <div class="hero-title">Una plataforma más completa para conversar, aprender y mejorar</div>
+            <div class="hero-title">Una plataforma más completa para conversar, aprender y acompañar</div>
             <div class="hero-text">
-                Inicia sesión o crea una cuenta para conservar tu historial personal y, si eres administrador,
-                revisar métricas básicas de utilidad de las respuestas.
+                Inicia sesión o crea una cuenta para conservar tu historial personal,
+                personalizar tu amigo imaginario y darle un avatar.
             </div>
         </div>
         """,
@@ -765,8 +1113,8 @@ def render_auth_screen() -> None:
                 <div class="info-text">
                     • Conversar con un acompañante empático<br>
                     • Buscar artículos por tema o tipo de lector<br>
-                    • Dar feedback sobre respuestas<br>
-                    • Revisar métricas si tu cuenta es administradora
+                    • Crear y personalizar tu amigo imaginario<br>
+                    • Dar feedback sobre respuestas
                 </div>
             </div>
             """,
@@ -845,627 +1193,6 @@ def render_auth_screen() -> None:
 
 
 # ------------------------------------------------------------
-# Panel de biblioteca estructurada
-# ------------------------------------------------------------
-def render_biblioteca_panel() -> None:
-    """
-    Renderiza el panel de búsqueda y lectura de artículos.
-    """
-    categorias = ["Todas"] + list_article_categories()
-    tipos_lector = ["Todos"] + list_reader_types()
-
-    if st.session_state.article_category_filter not in categorias:
-        st.session_state.article_category_filter = "Todas"
-
-    if st.session_state.article_reader_filter not in tipos_lector:
-        st.session_state.article_reader_filter = "Todos"
-
-    st.markdown(
-        """
-        <div class="info-card">
-            <div class="info-title">Biblioteca estructurada</div>
-            <div class="info-text">
-                Busca artículos por tema o tipo de lector. También puedes usar cualquier artículo como base
-                para conversar con el asistente educativo.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    col_f1, col_f2, col_f3 = st.columns([2, 1, 1], gap="medium")
-
-    with col_f1:
-        st.text_input(
-            "Buscar artículo",
-            key="article_search_text",
-            placeholder="Ejemplo: dislexia, ansiedad, crisis, aula..."
-        )
-
-    with col_f2:
-        st.selectbox(
-            "Categoría",
-            options=categorias,
-            key="article_category_filter"
-        )
-
-    with col_f3:
-        st.selectbox(
-            "Tipo de lector",
-            options=tipos_lector,
-            key="article_reader_filter"
-        )
-
-    resultados = search_articles(
-        search_text=st.session_state.article_search_text,
-        category=st.session_state.article_category_filter,
-        reader_type=st.session_state.article_reader_filter,
-        limit=100
-    )
-
-    ids_resultados = [articulo["id"] for articulo in resultados]
-
-    if resultados:
-        if st.session_state.selected_article_id not in ids_resultados:
-            st.session_state.selected_article_id = resultados[0]["id"]
-    else:
-        st.session_state.selected_article_id = None
-
-    col_lista, col_detalle = st.columns([1.05, 1.45], gap="large")
-
-    with col_lista:
-        st.caption(f"Resultados encontrados: {len(resultados)}")
-
-        if not resultados:
-            st.warning("No encontré artículos con esos filtros.")
-        else:
-            for articulo in resultados:
-                st.markdown(
-                    f"""
-                    <div class="article-card">
-                        <div class="article-title">{articulo["title"]}</div>
-                        <div class="article-meta">{articulo["category"]} · {articulo["reader_type"]}</div>
-                        <div class="article-desc">{articulo["short_description"]}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                if st.button(
-                    "Abrir artículo",
-                    key=f"abrir_articulo_{articulo['id']}",
-                    width="stretch"
-                ):
-                    st.session_state.selected_article_id = articulo["id"]
-                    st.rerun()
-
-    with col_detalle:
-        if not st.session_state.selected_article_id:
-            st.info("Selecciona un artículo para leerlo aquí.")
-            return
-
-        articulo = get_article_by_id(st.session_state.selected_article_id)
-
-        if not articulo:
-            st.warning("No pude cargar el artículo seleccionado.")
-            return
-
-        st.markdown(f"## {articulo['title']}")
-        st.caption(f"{articulo['category']} · {articulo['reader_type']}")
-
-        st.markdown(
-            f"""
-            <div class="info-card">
-                <div class="info-text">{articulo["short_description"]}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-        st.markdown(articulo["content"])
-
-        col_a, col_b = st.columns(2)
-
-        with col_a:
-            if st.button(
-                "Llevar este artículo al chat educativo",
-                key=f"usar_articulo_chat_{articulo['id']}",
-                width="stretch"
-            ):
-                st.session_state.pending_message = (
-                    f"Quiero entender mejor este artículo.\n\n"
-                    f"Título: {articulo['title']}\n"
-                    f"Categoría: {articulo['category']}\n"
-                    f"Tipo de lector: {articulo['reader_type']}\n"
-                    f"Resumen: {articulo['short_description']}\n\n"
-                    f"Contenido del artículo:\n{articulo['content']}\n\n"
-                    "Explícamelo con lenguaje sencillo y dame 3 ideas prácticas."
-                )
-                st.rerun()
-
-        with col_b:
-            if st.button(
-                "Crear un chat nuevo sobre este tema",
-                key=f"nuevo_chat_articulo_{articulo['id']}",
-                width="stretch"
-            ):
-                st.session_state.pending_message = (
-                    f"Quiero hablar sobre este tema: {articulo['title']}. "
-                    "Ayúdame a entenderlo mejor con palabras sencillas."
-                )
-                st.session_state.conversation_id = None
-                st.session_state.mensajes = []
-                st.rerun()
-
-
-# ------------------------------------------------------------
-# Panel para convertir documentos en artículos
-# ------------------------------------------------------------
-def render_document_ingestion_panel() -> None:
-    """
-    Permite subir un documento y convertirlo en un artículo
-    para la biblioteca usando Gemini.
-    """
-    st.markdown(
-        """
-        <div class="info-card">
-            <div class="info-title">Generar artículo desde documento</div>
-            <div class="info-text">
-                Sube un PDF, TXT o MD. La app extraerá el texto y generará un artículo estructurado
-                para guardarlo en la biblioteca.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    uploaded_doc = st.file_uploader(
-        "Sube un documento",
-        type=["pdf", "txt", "md"],
-        key="admin_document_uploader"
-    )
-
-    col_meta_1, col_meta_2 = st.columns(2)
-
-    with col_meta_1:
-        categoria_destino = st.text_input(
-            "Categoría destino",
-            value="General",
-            key="admin_doc_category"
-        )
-
-    with col_meta_2:
-        reader_type_destino = st.selectbox(
-            "Tipo de lector destino",
-            options=["Usuario", "Padre/Cuidador", "Docente"],
-            key="admin_doc_reader_type"
-        )
-
-    titulo_sugerido = st.text_input(
-        "Título sugerido (opcional)",
-        placeholder="Si lo dejas vacío, se tomará del archivo o lo propondrá la IA",
-        key="admin_doc_title"
-    )
-
-    info_documento = None
-
-    if uploaded_doc is not None:
-        try:
-            info_documento = extract_text_from_uploaded_file(
-                uploaded_doc,
-                max_chars=45000
-            )
-
-            col_info_1, col_info_2, col_info_3 = st.columns(3)
-
-            with col_info_1:
-                st.caption(f"Archivo: {info_documento['filename']}")
-
-            with col_info_2:
-                st.caption(f"Texto útil: {info_documento['used_length']} caracteres")
-
-            with col_info_3:
-                if info_documento["was_truncated"]:
-                    st.caption("Se usará una parte del texto")
-                else:
-                    st.caption("Se usará el texto completo")
-
-            with st.expander("Vista previa del texto extraído"):
-                st.text(info_documento["preview"])
-
-        except Exception as error:
-            st.error(f"No pude leer el documento: {error}")
-
-    col_accion_1, col_accion_2 = st.columns(2)
-
-    with col_accion_1:
-        generar_guardar = st.button(
-            "Generar y guardar artículo",
-            width="stretch",
-            key="admin_generate_article_from_doc"
-        )
-
-    with col_accion_2:
-        llevar_chat = st.button(
-            "Usar documento como base para chat",
-            width="stretch",
-            key="admin_send_doc_to_chat"
-        )
-
-    if generar_guardar:
-        if uploaded_doc is None:
-            st.warning("Primero sube un documento.")
-        else:
-            try:
-                with st.spinner("Extrayendo texto y generando artículo..."):
-                    info_documento = extract_text_from_uploaded_file(
-                        uploaded_doc,
-                        max_chars=45000
-                    )
-
-                    articulo_generado = generar_articulo_desde_documento(
-                        texto_fuente=info_documento["text"],
-                        category=categoria_destino,
-                        reader_type=reader_type_destino,
-                        suggested_title=titulo_sugerido,
-                        source_name=info_documento["base_title"]
-                    )
-
-                    article_id = create_article(
-                        title=articulo_generado["title"],
-                        category=articulo_generado["category"],
-                        reader_type=articulo_generado["reader_type"],
-                        short_description=articulo_generado["short_description"],
-                        content=articulo_generado["content"]
-                    )
-
-                st.session_state.selected_article_id = article_id
-                st.success("Artículo generado y guardado correctamente.")
-
-                if info_documento["was_truncated"]:
-                    st.info(
-                        "El documento era largo, así que se usó una parte del texto para generar el artículo."
-                    )
-
-                st.rerun()
-
-            except Exception as error:
-                st.error(f"No se pudo generar el artículo: {error}")
-
-    if llevar_chat:
-        if uploaded_doc is None:
-            st.warning("Primero sube un documento.")
-        else:
-            try:
-                info_documento = extract_text_from_uploaded_file(
-                    uploaded_doc,
-                    max_chars=20000
-                )
-
-                st.session_state.pending_message = (
-                    f"Quiero entender mejor este documento.\n\n"
-                    f"Archivo: {info_documento['filename']}\n"
-                    f"Título sugerido: {titulo_sugerido or info_documento['base_title']}\n"
-                    f"Categoría sugerida: {categoria_destino}\n"
-                    f"Tipo de lector: {reader_type_destino}\n\n"
-                    f"Contenido del documento:\n{info_documento['text']}\n\n"
-                    "Explícamelo con lenguaje sencillo y conviértelo en ideas prácticas."
-                )
-
-                st.success("Documento enviado como base para el chat educativo.")
-                st.rerun()
-
-            except Exception as error:
-                st.error(f"No se pudo preparar el documento para el chat: {error}")
-
-
-# ------------------------------------------------------------
-# Panel de administración
-# ------------------------------------------------------------
-def render_admin_panel() -> None:
-    """
-    Renderiza el panel de administración para artículos,
-    importación/exportación, documentos, métricas y usuarios.
-    """
-    st.markdown(
-        """
-        <div class="info-card">
-            <div class="info-title">Panel de administración</div>
-            <div class="info-text">
-                Desde aquí puedes crear, editar, eliminar, importar, exportar o generar artículos desde documentos,
-                revisar métricas de utilidad y gestionar permisos de administrador.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    tab_articulos, tab_import_export, tab_documentos, tab_metricas, tab_usuarios = st.tabs(
-        ["Administrar artículos", "Importar / Exportar", "Documentos", "Métricas", "Usuarios"]
-    )
-
-    # --------------------------------------------------------
-    # Administración de artículos
-    # --------------------------------------------------------
-    with tab_articulos:
-        articulos = search_articles(limit=500)
-
-        opciones_articulos = [("nuevo", "Crear artículo nuevo")]
-        opciones_articulos += [
-            (str(articulo["id"]), f"{articulo['title']} · {articulo['category']} · {articulo['reader_type']}")
-            for articulo in articulos
-        ]
-
-        valores_opciones = [opcion[0] for opcion in opciones_articulos]
-        etiquetas_opciones = {opcion[0]: opcion[1] for opcion in opciones_articulos}
-
-        seleccion = st.selectbox(
-            "Selecciona un artículo para editar o crea uno nuevo",
-            options=valores_opciones,
-            format_func=lambda clave: etiquetas_opciones[clave]
-        )
-
-        articulo_actual = None
-
-        if seleccion != "nuevo":
-            articulo_actual = get_article_by_id(int(seleccion))
-            st.session_state.admin_edit_article_id = int(seleccion)
-        else:
-            st.session_state.admin_edit_article_id = None
-
-        with st.form("admin_article_form"):
-            title = st.text_input(
-                "Título",
-                value=articulo_actual["title"] if articulo_actual else ""
-            )
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                category = st.text_input(
-                    "Categoría",
-                    value=articulo_actual["category"] if articulo_actual else ""
-                )
-
-            with col2:
-                reader_type = st.selectbox(
-                    "Tipo de lector",
-                    options=["Usuario", "Padre/Cuidador", "Docente"],
-                    index=[
-                        "Usuario",
-                        "Padre/Cuidador",
-                        "Docente"
-                    ].index(articulo_actual["reader_type"]) if articulo_actual and articulo_actual["reader_type"] in ["Usuario", "Padre/Cuidador", "Docente"] else 0
-                )
-
-            short_description = st.text_area(
-                "Descripción breve",
-                value=articulo_actual["short_description"] if articulo_actual else "",
-                height=120
-            )
-
-            content = st.text_area(
-                "Contenido del artículo",
-                value=articulo_actual["content"] if articulo_actual else "",
-                height=320
-            )
-
-            col_guardar, col_eliminar = st.columns(2)
-
-            with col_guardar:
-                submit_save = st.form_submit_button(
-                    "Guardar cambios",
-                    width="stretch"
-                )
-
-            with col_eliminar:
-                submit_delete = st.form_submit_button(
-                    "Eliminar artículo",
-                    width="stretch"
-                )
-
-            if submit_save:
-                try:
-                    if articulo_actual:
-                        update_article(
-                            article_id=articulo_actual["id"],
-                            title=title,
-                            category=category,
-                            reader_type=reader_type,
-                            short_description=short_description,
-                            content=content
-                        )
-                        st.success("Artículo actualizado correctamente.")
-                    else:
-                        new_id = create_article(
-                            title=title,
-                            category=category,
-                            reader_type=reader_type,
-                            short_description=short_description,
-                            content=content
-                        )
-                        st.session_state.selected_article_id = new_id
-                        st.success("Artículo creado correctamente.")
-
-                    st.rerun()
-
-                except ValueError as error:
-                    st.error(str(error))
-
-            if submit_delete:
-                if articulo_actual:
-                    delete_article(articulo_actual["id"])
-
-                    if st.session_state.selected_article_id == articulo_actual["id"]:
-                        st.session_state.selected_article_id = None
-
-                    st.success("Artículo eliminado correctamente.")
-                    st.rerun()
-                else:
-                    st.warning("No hay un artículo seleccionado para eliminar.")
-
-    # --------------------------------------------------------
-    # Importación y exportación
-    # --------------------------------------------------------
-    with tab_import_export:
-        st.markdown("### Plantillas")
-        col_temp_1, col_temp_2 = st.columns(2)
-
-        with col_temp_1:
-            st.download_button(
-                "Descargar plantilla CSV",
-                data=build_template_csv(),
-                file_name="plantilla_articulos.csv",
-                mime="text/csv",
-                width="stretch"
-            )
-
-        with col_temp_2:
-            st.download_button(
-                "Descargar plantilla JSON",
-                data=build_template_json(),
-                file_name="plantilla_articulos.json",
-                mime="application/json",
-                width="stretch"
-            )
-
-        st.markdown("### Importar artículos")
-        st.caption("Columnas esperadas: title, category, reader_type, short_description, content")
-
-        duplicate_mode_ui = st.selectbox(
-            "Cómo tratar duplicados",
-            options=[
-                "Omitir duplicados",
-                "Reemplazar duplicados",
-                "Permitir duplicados"
-            ]
-        )
-
-        duplicate_mode_map = {
-            "Omitir duplicados": "skip",
-            "Reemplazar duplicados": "replace",
-            "Permitir duplicados": "allow"
-        }
-
-        uploaded_file = st.file_uploader(
-            "Sube un archivo CSV o JSON",
-            type=["csv", "json"]
-        )
-
-        parsed_rows = []
-
-        if uploaded_file is not None:
-            try:
-                parsed_rows = parse_uploaded_articles(uploaded_file)
-                st.success(f"Archivo leído correctamente. Registros detectados: {len(parsed_rows)}")
-
-                with st.expander("Vista previa de los primeros registros"):
-                    st.json(parsed_rows[:3])
-
-            except Exception as error:
-                st.error(f"No pude leer el archivo: {error}")
-
-        if st.button("Importar artículos", width="stretch"):
-            if not uploaded_file:
-                st.warning("Primero sube un archivo CSV o JSON.")
-            else:
-                try:
-                    if not parsed_rows:
-                        parsed_rows = parse_uploaded_articles(uploaded_file)
-
-                    result = import_articles(
-                        records=parsed_rows,
-                        duplicate_mode=duplicate_mode_map[duplicate_mode_ui]
-                    )
-
-                    st.success(
-                        f"Importación terminada. Creados: {result['created']} · "
-                        f"Actualizados: {result['updated']} · "
-                        f"Omitidos: {result['skipped']}"
-                    )
-
-                    if result["errors"]:
-                        with st.expander("Errores detectados durante la importación"):
-                            for error in result["errors"]:
-                                st.write(f"- {error}")
-
-                    st.rerun()
-
-                except Exception as error:
-                    st.error(f"No se pudo importar el archivo: {error}")
-
-        st.markdown("### Exportar artículos")
-        articulos_export = list_all_articles(limit=5000)
-
-        col_exp_1, col_exp_2 = st.columns(2)
-
-        with col_exp_1:
-            st.download_button(
-                "Exportar biblioteca a CSV",
-                data=build_export_csv(articulos_export),
-                file_name="biblioteca_articulos.csv",
-                mime="text/csv",
-                width="stretch"
-            )
-
-        with col_exp_2:
-            st.download_button(
-                "Exportar biblioteca a JSON",
-                data=build_export_json(articulos_export),
-                file_name="biblioteca_articulos.json",
-                mime="application/json",
-                width="stretch"
-            )
-
-    # --------------------------------------------------------
-    # Generación desde documentos
-    # --------------------------------------------------------
-    with tab_documentos:
-        render_document_ingestion_panel()
-
-    # --------------------------------------------------------
-    # Métricas de utilidad
-    # --------------------------------------------------------
-    with tab_metricas:
-        render_feedback_metrics_panel()
-
-    # --------------------------------------------------------
-    # Administración de usuarios
-    # --------------------------------------------------------
-    with tab_usuarios:
-        usuarios = list_users(limit=200)
-
-        st.caption("Aquí puedes revisar usuarios y activar o quitar permisos de administrador.")
-
-        for usuario in usuarios:
-            col_info, col_toggle = st.columns([3, 1])
-
-            with col_info:
-                rol = "Administrador" if usuario["is_admin"] else "Usuario"
-                st.markdown(
-                    f"**{usuario['display_name']}**  \n@{usuario['username']} · {rol}"
-                )
-
-            with col_toggle:
-                nuevo_estado = st.checkbox(
-                    "Admin",
-                    value=usuario["is_admin"],
-                    key=f"admin_toggle_{usuario['id']}"
-                )
-
-                if nuevo_estado != usuario["is_admin"]:
-                    set_user_admin_status(
-                        user_id=usuario["id"],
-                        is_admin=nuevo_estado
-                    )
-
-                    if usuario["id"] == st.session_state.user_id:
-                        st.session_state.is_admin = nuevo_estado
-
-                    st.rerun()
-
-
-# ------------------------------------------------------------
 # Procesar mensaje del chat
 # ------------------------------------------------------------
 def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str) -> None:
@@ -1477,32 +1204,33 @@ def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str
 
     conversation_id = st.session_state.conversation_id
 
-    # Guardar mensaje del usuario en base y conservar su id
+    # --------------------------------------------------------
+    # Guardar mensaje del usuario
+    # --------------------------------------------------------
     user_message_id = add_message(
         conversation_id=conversation_id,
         role="user",
         content=mensaje_usuario
     )
 
-    # Guardar mensaje del usuario en sesión
     st.session_state.mensajes.append({
         "id": user_message_id,
         "role": "user",
         "content": mensaje_usuario
     })
 
-    # Actualizar título automático si aplica
     update_title_if_default(
         conversation_id=conversation_id,
         user_id=user_id,
         user_message=mensaje_usuario
     )
 
-    # Mostrar mensaje del usuario
     with st.chat_message("user"):
         st.markdown(mensaje_usuario)
 
+    # --------------------------------------------------------
     # Generar respuesta
+    # --------------------------------------------------------
     with st.chat_message("assistant"):
         with st.spinner("Pensando..."):
             try:
@@ -1513,7 +1241,9 @@ def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str
                 else:
                     respuesta = generar_respuesta(
                         modulo=modulo_actual,
-                        mensajes=st.session_state.mensajes
+                        mensajes=st.session_state.mensajes,
+                        friend_name=st.session_state.friend_name,
+                        friend_profile=st.session_state.friend_profile
                     )
 
                 if not respuesta or not respuesta.strip():
@@ -1531,7 +1261,9 @@ def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str
 
         st.markdown(respuesta)
 
-    # Guardar respuesta del asistente y conservar su id
+    # --------------------------------------------------------
+    # Guardar respuesta
+    # --------------------------------------------------------
     assistant_message_id = add_message(
         conversation_id=conversation_id,
         role="assistant",
@@ -1544,7 +1276,6 @@ def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str
         "content": respuesta
     })
 
-    # Recargar conversación para refrescar historial
     cargar_conversacion(conversation_id, user_id)
     st.rerun()
 
@@ -1556,11 +1287,17 @@ def render_app() -> None:
     """
     Renderiza la aplicación principal una vez autenticado.
     """
+    # --------------------------------------------------------
+    # Datos del usuario en sesión
+    # --------------------------------------------------------
     user_id = st.session_state.user_id
     display_name = st.session_state.display_name
     username = st.session_state.username
     is_admin = st.session_state.is_admin
 
+    # --------------------------------------------------------
+    # Asegurar conversación activa
+    # --------------------------------------------------------
     asegurar_conversacion_activa(st.session_state.modulo_actual, user_id)
 
     modulo_actual = st.session_state.modulo_actual
@@ -1578,6 +1315,7 @@ def render_app() -> None:
     with st.sidebar:
         st.subheader("Tu sesión")
         st.write(f"**{display_name}**")
+
         rol_sidebar = "Administrador" if is_admin else "Usuario"
         st.caption(f"@{username} · {rol_sidebar}")
 
@@ -1588,6 +1326,7 @@ def render_app() -> None:
         st.divider()
 
         st.subheader("Accesibilidad")
+
         st.selectbox(
             "Tamaño de texto",
             options=["Normal", "Grande", "Muy grande"],
@@ -1642,9 +1381,13 @@ def render_app() -> None:
     # --------------------------------------------------------
     # Encabezado principal
     # --------------------------------------------------------
-    st.markdown('<div class="main-title">Amigo Imaginario Neurodivergente</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="main-subtitle">Fase 10 · Feedback y métricas básicas</div>',
+        '<div class="main-title">Amigo Imaginario Neurodivergente</div>',
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        '<div class="main-subtitle">Fase 15.1 · Sesión de creación del amigo imaginario con avatar</div>',
         unsafe_allow_html=True
     )
 
@@ -1653,14 +1396,16 @@ def render_app() -> None:
         <div class="hero-card">
             <div class="hero-title">Hola, {display_name}</div>
             <div class="hero-text">
-                Puedes seguir conversando y, si tu cuenta es administradora, también revisar métricas
-                de utilidad para mejorar el sistema.
+                Puedes seguir conversando y, si quieres, crear y personalizar a tu amigo imaginario con un avatar propio.
             </div>
         </div>
         """,
         unsafe_allow_html=True
     )
 
+    # --------------------------------------------------------
+    # Tarjetas de estado
+    # --------------------------------------------------------
     col_stat_1, col_stat_2, col_stat_3 = st.columns(3)
 
     with col_stat_1:
@@ -1678,12 +1423,19 @@ def render_app() -> None:
         )
 
     with col_stat_3:
-        total_articulos = len(list_all_articles(limit=5000))
-        render_stat_card(
-            "Artículos disponibles",
-            str(total_articulos),
-            "Contenido actual de la biblioteca"
-        )
+        if modulo_actual == "amigo_imaginario":
+            render_stat_card(
+                "Nombre del amigo",
+                st.session_state.friend_name,
+                "Nombre personalizado del acompañante"
+            )
+        else:
+            total_articulos = len(list_all_articles(limit=5000))
+            render_stat_card(
+                "Artículos disponibles",
+                str(total_articulos),
+                "Contenido actual de la biblioteca"
+            )
 
     # --------------------------------------------------------
     # Selector de módulo
@@ -1705,6 +1457,9 @@ def render_app() -> None:
             crear_y_cargar_nueva_conversacion(modulo_actual, user_id)
             st.rerun()
 
+    # --------------------------------------------------------
+    # Si cambia el módulo, reiniciar estado conversacional
+    # --------------------------------------------------------
     if modulo_seleccionado != st.session_state.ultimo_modulo:
         st.session_state.modulo_actual = modulo_seleccionado
         st.session_state.ultimo_modulo = modulo_seleccionado
@@ -1718,6 +1473,9 @@ def render_app() -> None:
         asegurar_conversacion_activa(modulo_seleccionado, user_id)
         st.rerun()
 
+    # --------------------------------------------------------
+    # Refrescar módulo actual
+    # --------------------------------------------------------
     modulo_actual = st.session_state.modulo_actual
     info_modulo = MODULE_INFO[modulo_actual]
 
@@ -1731,24 +1489,34 @@ def render_app() -> None:
         unsafe_allow_html=True
     )
 
-    conversacion_actual = get_conversation_by_id(st.session_state.conversation_id, user_id)
+    conversacion_actual = get_conversation_by_id(
+        st.session_state.conversation_id,
+        user_id
+    )
+
     if conversacion_actual:
         st.caption(f"Chat actual: {conversacion_actual['title']}")
 
+    # --------------------------------------------------------
+    # Chips informativos
+    # --------------------------------------------------------
     if not st.session_state.ui_focus_mode:
         chip_admin = "Sí" if is_admin else "No"
-        st.markdown(
-            f"""
-            <span class="chip">Cuenta: @{username}</span>
-            <span class="chip">Módulo: {MODULE_LABELS[modulo_actual]}</span>
-            <span class="chip">Texto: {st.session_state.ui_font_size}</span>
-            <span class="chip">Admin: {chip_admin}</span>
-            """,
-            unsafe_allow_html=True
-        )
+
+        chips_html = f"""
+        <span class="chip">Cuenta: @{username}</span>
+        <span class="chip">Módulo: {MODULE_LABELS[modulo_actual]}</span>
+        <span class="chip">Texto: {st.session_state.ui_font_size}</span>
+        <span class="chip">Admin: {chip_admin}</span>
+        """
+
+        if modulo_actual == "amigo_imaginario":
+            chips_html += f'<span class="chip">Amigo: {st.session_state.friend_name}</span>'
+
+        st.markdown(chips_html, unsafe_allow_html=True)
 
     # --------------------------------------------------------
-    # Biblioteca inteligente con panel admin opcional
+    # Flujo: Biblioteca Inteligente
     # --------------------------------------------------------
     if modulo_actual == "biblioteca_inteligente":
         if is_admin:
@@ -1784,15 +1552,27 @@ def render_app() -> None:
                 ejemplos = info_modulo["ejemplos"]
 
                 with col_1:
-                    if st.button(ejemplos[0], key="ejemplo_biblio_1", width="stretch"):
+                    if st.button(
+                        ejemplos[0],
+                        key="ejemplo_biblio_1",
+                        width="stretch"
+                    ):
                         mensaje_desde_ejemplo = ejemplos[0]
 
                 with col_2:
-                    if st.button(ejemplos[1], key="ejemplo_biblio_2", width="stretch"):
+                    if st.button(
+                        ejemplos[1],
+                        key="ejemplo_biblio_2",
+                        width="stretch"
+                    ):
                         mensaje_desde_ejemplo = ejemplos[1]
 
                 with col_3:
-                    if st.button(ejemplos[2], key="ejemplo_biblio_3", width="stretch"):
+                    if st.button(
+                        ejemplos[2],
+                        key="ejemplo_biblio_3",
+                        width="stretch"
+                    ):
                         mensaje_desde_ejemplo = ejemplos[2]
 
             render_chat_history_with_feedback(
@@ -1801,7 +1581,6 @@ def render_app() -> None:
             )
 
             mensaje_chat = st.chat_input(info_modulo["placeholder"])
-
             mensaje_usuario = None
 
             if st.session_state.pending_message:
@@ -1827,7 +1606,118 @@ def render_app() -> None:
                 render_admin_panel()
 
     # --------------------------------------------------------
-    # Resto de módulos
+    # Flujo: Amigo Imaginario
+    # --------------------------------------------------------
+    elif modulo_actual == "amigo_imaginario":
+        tab_chat, tab_mi_amigo, tab_recuerdos = st.tabs(
+            ["Chat", "Mi amigo", "Recuerdos suaves"]
+        )
+
+        # ----------------------------------------------------
+        # Tab Chat
+        # ----------------------------------------------------
+        with tab_chat:
+            mensaje_desde_ejemplo = None
+            mensaje_desde_iniciativa = None
+
+            st.markdown(
+                f"""
+                <div class="info-card">
+                    <div class="info-title">Ahora estás hablando con {st.session_state.friend_name}</div>
+                    <div class="info-text">
+                        Este amigo imaginario puede acompañar, escuchar, contar mini historias,
+                        proponer juegos tranquilos, iniciar dinámicas suaves y seguir la conversación con más calidez.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            render_friend_avatar_preview()
+
+            mensaje_desde_iniciativa = render_friend_initiatives_panel()
+
+            if not st.session_state.ui_focus_mode:
+                st.caption("Prueba con uno de estos ejemplos rápidos:")
+
+                col_1, col_2, col_3 = st.columns(3)
+                ejemplos = info_modulo["ejemplos"]
+
+                with col_1:
+                    if st.button(
+                        ejemplos[0],
+                        key="ejemplo_1_amigo_imaginario",
+                        width="stretch"
+                    ):
+                        mensaje_desde_ejemplo = ejemplos[0]
+
+                with col_2:
+                    if st.button(
+                        ejemplos[1],
+                        key="ejemplo_2_amigo_imaginario",
+                        width="stretch"
+                    ):
+                        mensaje_desde_ejemplo = ejemplos[1]
+
+                with col_3:
+                    if st.button(
+                        ejemplos[2],
+                        key="ejemplo_3_amigo_imaginario",
+                        width="stretch"
+                    ):
+                        mensaje_desde_ejemplo = ejemplos[2]
+
+            render_chat_history_with_feedback(
+                user_id=user_id,
+                modulo_actual=modulo_actual
+            )
+
+            mensaje_chat = st.chat_input(info_modulo["placeholder"])
+            mensaje_usuario = None
+
+            if mensaje_desde_iniciativa:
+                mensaje_usuario = mensaje_desde_iniciativa
+            elif mensaje_desde_ejemplo:
+                mensaje_usuario = mensaje_desde_ejemplo
+            elif mensaje_chat:
+                mensaje_usuario = mensaje_chat
+
+            if mensaje_usuario:
+                procesar_mensaje_chat(
+                    user_id=user_id,
+                    modulo_actual=modulo_actual,
+                    mensaje_usuario=mensaje_usuario
+                )
+
+        # ----------------------------------------------------
+        # Tab Mi amigo
+        # ----------------------------------------------------
+        with tab_mi_amigo:
+            render_friend_creation_panel(user_id)
+
+        # ----------------------------------------------------
+        # Tab Recuerdos suaves
+        # ----------------------------------------------------
+        with tab_recuerdos:
+            render_friend_memory_panel(user_id)
+
+            st.markdown(
+                f"""
+                <div class="info-card">
+                    <div class="info-title">Lo que {st.session_state.friend_name} recuerda de ti</div>
+                    <div class="info-text">
+                        Color favorito: {st.session_state.friend_profile.get("favorite_color") or "Todavía no guardado"}<br>
+                        Actividad favorita: {st.session_state.friend_profile.get("favorite_activity") or "Todavía no guardada"}<br>
+                        Cómo te gusta que te animen: {st.session_state.friend_profile.get("encouragement_style") or "Todavía no guardado"}<br>
+                        Cuando necesitas apoyo prefieres: {st.session_state.friend_profile.get("preferred_comfort") or "cuentos"}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+    # --------------------------------------------------------
+    # Flujo: Modo Padres
     # --------------------------------------------------------
     else:
         mensaje_desde_ejemplo = None
@@ -1839,15 +1729,27 @@ def render_app() -> None:
             ejemplos = info_modulo["ejemplos"]
 
             with col_1:
-                if st.button(ejemplos[0], key=f"ejemplo_1_{modulo_actual}", width="stretch"):
+                if st.button(
+                    ejemplos[0],
+                    key=f"ejemplo_1_{modulo_actual}",
+                    width="stretch"
+                ):
                     mensaje_desde_ejemplo = ejemplos[0]
 
             with col_2:
-                if st.button(ejemplos[1], key=f"ejemplo_2_{modulo_actual}", width="stretch"):
+                if st.button(
+                    ejemplos[1],
+                    key=f"ejemplo_2_{modulo_actual}",
+                    width="stretch"
+                ):
                     mensaje_desde_ejemplo = ejemplos[1]
 
             with col_3:
-                if st.button(ejemplos[2], key=f"ejemplo_3_{modulo_actual}", width="stretch"):
+                if st.button(
+                    ejemplos[2],
+                    key=f"ejemplo_3_{modulo_actual}",
+                    width="stretch"
+                ):
                     mensaje_desde_ejemplo = ejemplos[2]
 
         render_chat_history_with_feedback(
@@ -1856,7 +1758,12 @@ def render_app() -> None:
         )
 
         mensaje_chat = st.chat_input(info_modulo["placeholder"])
-        mensaje_usuario = mensaje_chat if mensaje_chat else mensaje_desde_ejemplo
+        mensaje_usuario = None
+
+        if mensaje_chat:
+            mensaje_usuario = mensaje_chat
+        elif mensaje_desde_ejemplo:
+            mensaje_usuario = mensaje_desde_ejemplo
 
         if mensaje_usuario:
             procesar_mensaje_chat(
@@ -1866,7 +1773,7 @@ def render_app() -> None:
             )
 
     # --------------------------------------------------------
-    # Aviso ético
+    # Aviso ético final
     # --------------------------------------------------------
     st.divider()
     st.markdown(

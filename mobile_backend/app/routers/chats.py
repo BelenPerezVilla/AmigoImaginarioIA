@@ -1,0 +1,201 @@
+# ============================================================
+# mobile_backend/app/routers/chats.py
+# Endpoints de conversaciones y mensajes para la app móvil.
+# ============================================================
+
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from database.chat_db import (
+    add_message,
+    create_conversation,
+    get_conversation_by_id,
+    get_messages_by_conversation,
+    list_conversations_by_module,
+    update_title_if_default,
+)
+from mobile_backend.app.core.deps import get_current_user
+from mobile_backend.app.schemas import (
+    ConversationOut,
+    MessageOut,
+    SendMessageRequest,
+    SendMessageResponse,
+)
+from services.gemini_service import (
+    generar_respuesta,
+    generar_respuesta_biblioteca_rag,
+)
+
+# ------------------------------------------------------------
+# Router de chats
+# ------------------------------------------------------------
+router = APIRouter(prefix="/api/chats", tags=["chats"])
+
+
+# ------------------------------------------------------------
+# Listar conversaciones por módulo
+# ------------------------------------------------------------
+@router.get("/{module}", response_model=list[ConversationOut])
+def list_module_conversations(
+    module: str,
+    current_user: dict = Depends(get_current_user),
+) -> list[ConversationOut]:
+    """
+    Devuelve las conversaciones del usuario para un módulo.
+    """
+    conversations = list_conversations_by_module(
+        user_id=current_user["id"],
+        module=module,
+        limit=100
+    )
+
+    return [ConversationOut(**conversation) for conversation in conversations]
+
+
+# ------------------------------------------------------------
+# Crear conversación
+# ------------------------------------------------------------
+@router.post("/{module}", response_model=ConversationOut)
+def create_module_conversation(
+    module: str,
+    current_user: dict = Depends(get_current_user),
+) -> ConversationOut:
+    """
+    Crea una conversación vacía para un módulo.
+    """
+    conversation_id = create_conversation(
+        user_id=current_user["id"],
+        module=module
+    )
+
+    conversation = get_conversation_by_id(
+        conversation_id=conversation_id,
+        user_id=current_user["id"]
+    )
+
+    if not conversation:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="No se pudo crear la conversación."
+        )
+
+    return ConversationOut(**conversation)
+
+
+# ------------------------------------------------------------
+# Obtener mensajes de una conversación
+# ------------------------------------------------------------
+@router.get("/conversations/{conversation_id}", response_model=list[MessageOut])
+def get_conversation_messages(
+    conversation_id: int,
+    current_user: dict = Depends(get_current_user),
+) -> list[MessageOut]:
+    """
+    Devuelve los mensajes de una conversación del usuario.
+    """
+    conversation = get_conversation_by_id(
+        conversation_id=conversation_id,
+        user_id=current_user["id"]
+    )
+
+    if not conversation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversación no encontrada."
+        )
+
+    messages = get_messages_by_conversation(
+        conversation_id=conversation_id,
+        user_id=current_user["id"]
+    )
+
+    return [MessageOut(**message) for message in messages]
+
+
+# ------------------------------------------------------------
+# Enviar mensaje a una conversación
+# ------------------------------------------------------------
+@router.post("/conversations/{conversation_id}/messages", response_model=SendMessageResponse)
+def send_message_to_conversation(
+    conversation_id: int,
+    payload: SendMessageRequest,
+    current_user: dict = Depends(get_current_user),
+) -> SendMessageResponse:
+    """
+    Guarda el mensaje del usuario, genera la respuesta de la IA
+    y devuelve ambos mensajes.
+    """
+    conversation = get_conversation_by_id(
+        conversation_id=conversation_id,
+        user_id=current_user["id"]
+    )
+
+    if not conversation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversación no encontrada."
+        )
+
+    # Guardar mensaje del usuario
+    user_message_id = add_message(
+        conversation_id=conversation_id,
+        role="user",
+        content=payload.content
+    )
+
+    update_title_if_default(
+        conversation_id=conversation_id,
+        user_id=current_user["id"],
+        user_message=payload.content
+    )
+
+    # Reconstruir historial actual para generar respuesta
+    mensajes = get_messages_by_conversation(
+        conversation_id=conversation_id,
+        user_id=current_user["id"]
+    )
+
+    mensajes_prompt = [
+        {
+            "role": message["role"],
+            "content": message["content"]
+        }
+        for message in mensajes
+    ]
+
+    # Seleccionar generador según módulo
+    if conversation["module"] == "biblioteca_inteligente":
+        assistant_content = generar_respuesta_biblioteca_rag(
+            mensajes=mensajes_prompt
+        )
+    else:
+        assistant_content = generar_respuesta(
+            modulo=conversation["module"],
+            mensajes=mensajes_prompt
+        )
+
+    # Guardar respuesta de la IA
+    assistant_message_id = add_message(
+        conversation_id=conversation_id,
+        role="assistant",
+        content=assistant_content
+    )
+
+    updated_messages = get_messages_by_conversation(
+        conversation_id=conversation_id,
+        user_id=current_user["id"]
+    )
+
+    user_message = next(
+        message for message in updated_messages
+        if message["id"] == user_message_id
+    )
+
+    assistant_message = next(
+        message for message in updated_messages
+        if message["id"] == assistant_message_id
+    )
+
+    return SendMessageResponse(
+        user_message=MessageOut(**user_message),
+        assistant_message=MessageOut(**assistant_message),
+    )

@@ -11,8 +11,18 @@ import time
 from google import genai
 
 from config import GEMINI_API_KEY, GEMINI_MODEL
-from prompts import SYSTEM_PROMPTS
+from prompts import get_system_prompt
 from services.rag_service import recuperar_contexto_biblioteca
+
+
+# ------------------------------------------------------------
+# Validar API key
+# ------------------------------------------------------------
+if not GEMINI_API_KEY:
+    raise ValueError(
+        "No se encontró GEMINI_API_KEY. "
+        "Crea un archivo .env en la raíz del proyecto y agrega tu clave."
+    )
 
 
 # ------------------------------------------------------------
@@ -83,7 +93,6 @@ def llamar_modelo(prompt: str) -> str:
                 ultimo_error = error
                 mensaje_error = str(error)
 
-                # Reintento simple para saturación temporal
                 if "503" in mensaje_error or "UNAVAILABLE" in mensaje_error:
                     time.sleep(2 * (intento + 1))
                     continue
@@ -96,20 +105,28 @@ def llamar_modelo(prompt: str) -> str:
 # ------------------------------------------------------------
 # Generar respuesta general por módulo
 # ------------------------------------------------------------
-def generar_respuesta(modulo: str, mensajes: list[dict]) -> str:
+def generar_respuesta(
+    modulo: str,
+    mensajes: list[dict],
+    friend_name: str = "",
+    friend_profile: dict | None = None
+) -> str:
     """
     Genera una respuesta de chat según el módulo.
 
     Parámetros:
         modulo (str): módulo activo
         mensajes (list[dict]): historial de conversación
+        friend_name (str): nombre del amigo imaginario
+        friend_profile (dict | None): memoria suave del vínculo
 
     Retorna:
         str: respuesta generada
     """
-    instrucciones = SYSTEM_PROMPTS.get(
-        modulo,
-        "Responde con claridad, empatía y responsabilidad."
+    instrucciones = get_system_prompt(
+        modulo=modulo,
+        friend_name=friend_name,
+        friend_profile=friend_profile
     )
 
     contexto = construir_contexto_texto(mensajes)
@@ -132,16 +149,11 @@ def generar_respuesta_biblioteca_rag(mensajes: list[dict]) -> str:
     """
     Genera una respuesta para Biblioteca Inteligente usando
     primero fragmentos relevantes de la biblioteca interna.
-
-    Parámetros:
-        mensajes (list[dict]): historial de conversación
-
-    Retorna:
-        str: respuesta del modelo con apoyo de contexto interno
     """
-    instrucciones = SYSTEM_PROMPTS.get(
-        "biblioteca_inteligente",
-        "Explica con claridad y responsabilidad."
+    instrucciones = get_system_prompt(
+        modulo="biblioteca_inteligente",
+        friend_name="",
+        friend_profile=None
     )
 
     contexto_chat = construir_contexto_texto(mensajes)
@@ -150,7 +162,6 @@ def generar_respuesta_biblioteca_rag(mensajes: list[dict]) -> str:
     contexto_interno = recuperacion["context_text"]
     fuentes = recuperacion["sources"]
 
-    # Si no hay contexto útil, usar el flujo educativo normal
     if not contexto_interno:
         return generar_respuesta("biblioteca_inteligente", mensajes)
 
@@ -193,14 +204,6 @@ Conversación actual:
 def extraer_bloque(texto: str, marcador_inicio: str, marcador_fin: str | None = None) -> str:
     """
     Extrae texto entre dos marcadores.
-
-    Parámetros:
-        texto (str): texto completo
-        marcador_inicio (str): marcador inicial
-        marcador_fin (str | None): marcador final opcional
-
-    Retorna:
-        str: contenido del bloque
     """
     inicio = texto.find(marcador_inicio)
 
@@ -225,13 +228,6 @@ def extraer_bloque(texto: str, marcador_inicio: str, marcador_fin: str | None = 
 def parsear_articulo_generado(texto: str, fallback_title: str) -> dict:
     """
     Convierte la respuesta del modelo en campos de artículo.
-
-    Parámetros:
-        texto (str): respuesta cruda del modelo
-        fallback_title (str): título de respaldo
-
-    Retorna:
-        dict: artículo estructurado
     """
     title = extraer_bloque(
         texto,
@@ -251,7 +247,6 @@ def parsear_articulo_generado(texto: str, fallback_title: str) -> dict:
         None
     )
 
-    # Fallbacks simples por si el modelo no siguió el formato exacto
     if not title:
         title = fallback_title or "Artículo generado desde documento"
 
@@ -281,16 +276,6 @@ def generar_articulo_desde_documento(
     """
     Convierte el texto de un documento en un artículo listo
     para guardarse en la biblioteca.
-
-    Parámetros:
-        texto_fuente (str): contenido del documento
-        category (str): categoría destino
-        reader_type (str): tipo de lector
-        suggested_title (str): título sugerido opcional
-        source_name (str): nombre del archivo fuente
-
-    Retorna:
-        dict: artículo con title, short_description y content
     """
     titulo_base = suggested_title.strip() or source_name.strip() or "Documento cargado"
 

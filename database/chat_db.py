@@ -15,6 +15,8 @@ import secrets
 import sqlite3
 from typing import Optional
 
+from streamlit import connection
+
 from config import DATABASE_PATH
 
 
@@ -90,6 +92,27 @@ def initialize_database() -> None:
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
     """)
+# --------------------------------------------------------
+# Tabla para el avatar del amigo imaginario
+# Un perfil por usuario
+# --------------------------------------------------------
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS imaginary_friend_profile (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL UNIQUE,
+            face_shape TEXT NOT NULL DEFAULT 'redondo',
+            primary_color TEXT NOT NULL DEFAULT 'azul',
+            hair_style TEXT NOT NULL DEFAULT 'corto',
+            hair_color TEXT NOT NULL DEFAULT 'castano',
+            eye_style TEXT NOT NULL DEFAULT 'felices',
+            mouth_style TEXT NOT NULL DEFAULT 'sonrisa',
+            accessory TEXT NOT NULL DEFAULT 'estrella',
+            background_style TEXT NOT NULL DEFAULT 'cielo',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+        """)
 
     # --------------------------------------------------------
     # Tabla de conversaciones
@@ -158,6 +181,7 @@ def initialize_database() -> None:
     """)
 
     connection.commit()
+    
 
     # --------------------------------------------------------
     # Migraciones simples de columnas
@@ -175,7 +199,42 @@ def initialize_database() -> None:
             ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0;
         """)
         connection.commit()
+    if not column_exists("users", "friend_name"):
+        cursor.execute("""
+            ALTER TABLE users
+            ADD COLUMN friend_name TEXT NOT NULL DEFAULT 'Lumi';
+        """)
+        connection.commit()
+    # --------------------------------------------------------
+# Migraciones para memoria suave del vínculo
+# --------------------------------------------------------
+    if not column_exists("users", "favorite_color"):
+        cursor.execute("""
+        ALTER TABLE users
+        ADD COLUMN favorite_color TEXT NOT NULL DEFAULT '';
+    """)
+    connection.commit()
 
+    if not column_exists("users", "favorite_activity"):
+        cursor.execute("""
+        ALTER TABLE users
+        ADD COLUMN favorite_activity TEXT NOT NULL DEFAULT '';
+    """)
+    connection.commit()
+
+    if not column_exists("users", "encouragement_style"):
+        cursor.execute("""
+        ALTER TABLE users
+        ADD COLUMN encouragement_style TEXT NOT NULL DEFAULT '';
+    """)
+    connection.commit()
+
+    if not column_exists("users", "preferred_comfort"):
+        cursor.execute("""
+        ALTER TABLE users
+        ADD COLUMN preferred_comfort TEXT NOT NULL DEFAULT 'cuentos';
+    """)
+    connection.commit()
     # --------------------------------------------------------
     # Índices
     # --------------------------------------------------------
@@ -192,6 +251,10 @@ def initialize_database() -> None:
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_conversations_user_module_updated
         ON conversations(user_id, module, updated_at DESC);
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_imaginary_friend_user
+        ON imaginary_friend_profile(user_id);
     """)
 
     cursor.execute("""
@@ -591,6 +654,7 @@ def verify_password(password: str, stored_hash: str) -> bool:
         return False
 
 
+
 # ------------------------------------------------------------
 # Obtener usuario por username
 # ------------------------------------------------------------
@@ -610,7 +674,17 @@ def get_user_by_username(username: str) -> Optional[dict]:
     cursor = connection.cursor()
 
     cursor.execute("""
-        SELECT id, username, display_name, is_admin, created_at
+        SELECT
+            id,
+            username,
+            display_name,
+            is_admin,
+            friend_name,
+            favorite_color,
+            favorite_activity,
+            encouragement_style,
+            preferred_comfort,
+            created_at
         FROM users
         WHERE username = ?;
     """, (username_normalized,))
@@ -626,9 +700,13 @@ def get_user_by_username(username: str) -> Optional[dict]:
         "username": row["username"],
         "display_name": row["display_name"],
         "is_admin": bool(row["is_admin"]),
+        "friend_name": row["friend_name"] or "Lumi",
+        "favorite_color": row["favorite_color"] or "",
+        "favorite_activity": row["favorite_activity"] or "",
+        "encouragement_style": row["encouragement_style"] or "",
+        "preferred_comfort": row["preferred_comfort"] or "cuentos",
         "created_at": row["created_at"]
     }
-
 
 # ------------------------------------------------------------
 # Obtener usuario por id
@@ -647,7 +725,17 @@ def get_user_by_id(user_id: int) -> Optional[dict]:
     cursor = connection.cursor()
 
     cursor.execute("""
-        SELECT id, username, display_name, is_admin, created_at
+        SELECT
+            id,
+            username,
+            display_name,
+            is_admin,
+            friend_name,
+            favorite_color,
+            favorite_activity,
+            encouragement_style,
+            preferred_comfort,
+            created_at
         FROM users
         WHERE id = ?;
     """, (user_id,))
@@ -663,9 +751,13 @@ def get_user_by_id(user_id: int) -> Optional[dict]:
         "username": row["username"],
         "display_name": row["display_name"],
         "is_admin": bool(row["is_admin"]),
+        "friend_name": row["friend_name"] or "Lumi",
+        "favorite_color": row["favorite_color"] or "",
+        "favorite_activity": row["favorite_activity"] or "",
+        "encouragement_style": row["encouragement_style"] or "",
+        "preferred_comfort": row["preferred_comfort"] or "cuentos",
         "created_at": row["created_at"]
     }
-
 
 # ------------------------------------------------------------
 # Crear usuario
@@ -707,7 +799,9 @@ def create_user(username: str, password: str, display_name: str = "") -> dict:
         connection.close()
         raise ValueError("Ese nombre de usuario ya está en uso.")
 
+    # --------------------------------------------------------
     # Determinar si este usuario debe ser administrador
+    # --------------------------------------------------------
     cursor.execute("""
         SELECT COUNT(*) AS total
         FROM users
@@ -719,9 +813,29 @@ def create_user(username: str, password: str, display_name: str = "") -> dict:
     password_hash = hash_password(password)
 
     cursor.execute("""
-        INSERT INTO users (username, display_name, password_hash, is_admin)
-        VALUES (?, ?, ?, ?);
-    """, (username_normalized, display_name_clean, password_hash, is_admin))
+        INSERT INTO users (
+            username,
+            display_name,
+            password_hash,
+            is_admin,
+            friend_name,
+            favorite_color,
+            favorite_activity,
+            encouragement_style,
+            preferred_comfort
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+    """, (
+        username_normalized,
+        display_name_clean,
+        password_hash,
+        is_admin,
+        "Lumi",
+        "",
+        "",
+        "",
+        "cuentos"
+    ))
 
     user_id = cursor.lastrowid
 
@@ -734,8 +848,9 @@ def create_user(username: str, password: str, display_name: str = "") -> dict:
         raise ValueError("No se pudo recuperar el usuario recién creado.")
 
     return usuario
-
-
+# ------------------------------------------------------------
+# Autenticar usuario
+# ------------------------------------------------------------
 # ------------------------------------------------------------
 # Autenticar usuario
 # ------------------------------------------------------------
@@ -756,7 +871,18 @@ def authenticate_user(username: str, password: str) -> Optional[dict]:
     cursor = connection.cursor()
 
     cursor.execute("""
-        SELECT id, username, display_name, password_hash, is_admin, created_at
+        SELECT
+            id,
+            username,
+            display_name,
+            password_hash,
+            is_admin,
+            friend_name,
+            favorite_color,
+            favorite_activity,
+            encouragement_style,
+            preferred_comfort,
+            created_at
         FROM users
         WHERE username = ?;
     """, (username_normalized,))
@@ -775,10 +901,13 @@ def authenticate_user(username: str, password: str) -> Optional[dict]:
         "username": row["username"],
         "display_name": row["display_name"],
         "is_admin": bool(row["is_admin"]),
+        "friend_name": row["friend_name"] or "Lumi",
+        "favorite_color": row["favorite_color"] or "",
+        "favorite_activity": row["favorite_activity"] or "",
+        "encouragement_style": row["encouragement_style"] or "",
+        "preferred_comfort": row["preferred_comfort"] or "cuentos",
         "created_at": row["created_at"]
     }
-
-
 # ------------------------------------------------------------
 # Crear conversación
 # ------------------------------------------------------------
@@ -1836,3 +1965,369 @@ def list_recent_feedback(limit: int = 50) -> list[dict]:
         })
 
     return resultados
+# ============================================================
+# Funciones para el nombre del amigo imaginario
+# ============================================================
+
+# ------------------------------------------------------------
+# Obtener nombre del amigo imaginario
+# ------------------------------------------------------------
+def get_friend_name(user_id: int) -> str:
+    """
+    Obtiene el nombre guardado del amigo imaginario.
+
+    Parámetros:
+        user_id (int): id del usuario
+
+    Retorna:
+        str: nombre del amigo imaginario
+    """
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT friend_name
+        FROM users
+        WHERE id = ?;
+    """, (user_id,))
+
+    row = cursor.fetchone()
+    connection.close()
+
+    if not row:
+        return "Lumi"
+
+    return (row["friend_name"] or "Lumi").strip()
+
+
+# ------------------------------------------------------------
+# Actualizar nombre del amigo imaginario
+# ------------------------------------------------------------
+def update_friend_name(user_id: int, friend_name: str) -> None:
+    """
+    Guarda el nombre del amigo imaginario para un usuario.
+
+    Parámetros:
+        user_id (int): id del usuario
+        friend_name (str): nombre nuevo del amigo
+    """
+    friend_name_clean = " ".join(str(friend_name or "").strip().split())
+
+    if not friend_name_clean:
+        raise ValueError("El nombre del amigo imaginario es obligatorio.")
+
+    if len(friend_name_clean) < 2:
+        raise ValueError("El nombre debe tener al menos 2 caracteres.")
+
+    if len(friend_name_clean) > 30:
+        raise ValueError("El nombre no debe pasar de 30 caracteres.")
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        UPDATE users
+        SET friend_name = ?
+        WHERE id = ?;
+    """, (friend_name_clean, user_id))
+
+    connection.commit()
+    connection.close()
+
+# ============================================================
+# Funciones para memoria suave del amigo imaginario
+# ============================================================
+
+# ------------------------------------------------------------
+# Obtener perfil suave del amigo imaginario
+# ------------------------------------------------------------
+def get_friend_profile(user_id: int) -> dict:
+    """
+    Obtiene el perfil de memoria suave del usuario.
+
+    Parámetros:
+        user_id (int): id del usuario
+
+    Retorna:
+        dict: preferencias del vínculo
+    """
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            friend_name,
+            favorite_color,
+            favorite_activity,
+            encouragement_style,
+            preferred_comfort
+        FROM users
+        WHERE id = ?;
+    """, (user_id,))
+
+    row = cursor.fetchone()
+    connection.close()
+
+    if not row:
+        return {
+            "friend_name": "Lumi",
+            "favorite_color": "",
+            "favorite_activity": "",
+            "encouragement_style": "",
+            "preferred_comfort": "cuentos"
+        }
+
+    return {
+        "friend_name": row["friend_name"] or "Lumi",
+        "favorite_color": row["favorite_color"] or "",
+        "favorite_activity": row["favorite_activity"] or "",
+        "encouragement_style": row["encouragement_style"] or "",
+        "preferred_comfort": row["preferred_comfort"] or "cuentos"
+    }
+
+
+# ------------------------------------------------------------
+# Actualizar memoria suave del amigo imaginario
+# ------------------------------------------------------------
+def update_friend_profile(
+    user_id: int,
+    favorite_color: str,
+    favorite_activity: str,
+    encouragement_style: str,
+    preferred_comfort: str
+) -> None:
+    """
+    Guarda la memoria suave del vínculo para un usuario.
+
+    Parámetros:
+        user_id (int): id del usuario
+        favorite_color (str): color favorito
+        favorite_activity (str): actividad favorita
+        encouragement_style (str): cómo le gusta que lo animen
+        preferred_comfort (str): cuentos, juegos o respiraciones
+    """
+    favorite_color_clean = " ".join(str(favorite_color or "").strip().split())
+    favorite_activity_clean = " ".join(str(favorite_activity or "").strip().split())
+    encouragement_style_clean = " ".join(str(encouragement_style or "").strip().split())
+    preferred_comfort_clean = str(preferred_comfort or "").strip().lower()
+
+    # --------------------------------------------------------
+    # Validar opción principal de consuelo
+    # --------------------------------------------------------
+    opciones_validas = {"cuentos", "juegos", "respiraciones"}
+
+    if preferred_comfort_clean not in opciones_validas:
+        raise ValueError("La preferencia de apoyo debe ser cuentos, juegos o respiraciones.")
+
+    if len(favorite_color_clean) > 30:
+        raise ValueError("El color favorito no debe pasar de 30 caracteres.")
+
+    if len(favorite_activity_clean) > 50:
+        raise ValueError("La actividad favorita no debe pasar de 50 caracteres.")
+
+    if len(encouragement_style_clean) > 80:
+        raise ValueError("La forma de animarlo no debe pasar de 80 caracteres.")
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        UPDATE users
+        SET
+            favorite_color = ?,
+            favorite_activity = ?,
+            encouragement_style = ?,
+            preferred_comfort = ?
+        WHERE id = ?;
+    """, (
+        favorite_color_clean,
+        favorite_activity_clean,
+        encouragement_style_clean,
+        preferred_comfort_clean,
+        user_id
+    ))
+
+    connection.commit()
+    connection.close()
+# ============================================================
+# Funciones para el avatar del amigo imaginario
+# ============================================================
+
+# ------------------------------------------------------------
+# Perfil visual por defecto del avatar
+# ------------------------------------------------------------
+DEFAULT_IMAGINARY_FRIEND_AVATAR = {
+    "face_shape": "redondo",
+    "primary_color": "azul",
+    "hair_style": "corto",
+    "hair_color": "castano",
+    "eye_style": "felices",
+    "mouth_style": "sonrisa",
+    "accessory": "estrella",
+    "background_style": "cielo",
+}
+
+
+# ------------------------------------------------------------
+# Crear perfil visual por defecto si no existe
+# ------------------------------------------------------------
+def ensure_imaginary_friend_profile(user_id: int) -> None:
+    """
+    Crea el perfil visual por defecto del amigo imaginario si
+    el usuario todavía no tiene uno.
+
+    Parámetros:
+        user_id (int): id del usuario
+    """
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT id
+        FROM imaginary_friend_profile
+        WHERE user_id = ?;
+    """, (user_id,))
+
+    exists = cursor.fetchone()
+
+    if not exists:
+        cursor.execute("""
+            INSERT INTO imaginary_friend_profile (
+                user_id,
+                face_shape,
+                primary_color,
+                hair_style,
+                hair_color,
+                eye_style,
+                mouth_style,
+                accessory,
+                background_style
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """, (
+            user_id,
+            DEFAULT_IMAGINARY_FRIEND_AVATAR["face_shape"],
+            DEFAULT_IMAGINARY_FRIEND_AVATAR["primary_color"],
+            DEFAULT_IMAGINARY_FRIEND_AVATAR["hair_style"],
+            DEFAULT_IMAGINARY_FRIEND_AVATAR["hair_color"],
+            DEFAULT_IMAGINARY_FRIEND_AVATAR["eye_style"],
+            DEFAULT_IMAGINARY_FRIEND_AVATAR["mouth_style"],
+            DEFAULT_IMAGINARY_FRIEND_AVATAR["accessory"],
+            DEFAULT_IMAGINARY_FRIEND_AVATAR["background_style"],
+        ))
+
+        connection.commit()
+
+    connection.close()
+
+
+# ------------------------------------------------------------
+# Obtener perfil visual del amigo imaginario
+# ------------------------------------------------------------
+def get_imaginary_friend_profile(user_id: int) -> dict:
+    """
+    Obtiene el perfil visual del amigo imaginario.
+
+    Parámetros:
+        user_id (int): id del usuario
+
+    Retorna:
+        dict: configuración visual del avatar
+    """
+    ensure_imaginary_friend_profile(user_id)
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            face_shape,
+            primary_color,
+            hair_style,
+            hair_color,
+            eye_style,
+            mouth_style,
+            accessory,
+            background_style
+        FROM imaginary_friend_profile
+        WHERE user_id = ?;
+    """, (user_id,))
+
+    row = cursor.fetchone()
+    connection.close()
+
+    if not row:
+        return dict(DEFAULT_IMAGINARY_FRIEND_AVATAR)
+
+    return {
+        "face_shape": row["face_shape"] or "redondo",
+        "primary_color": row["primary_color"] or "azul",
+        "hair_style": row["hair_style"] or "corto",
+        "hair_color": row["hair_color"] or "castano",
+        "eye_style": row["eye_style"] or "felices",
+        "mouth_style": row["mouth_style"] or "sonrisa",
+        "accessory": row["accessory"] or "estrella",
+        "background_style": row["background_style"] or "cielo",
+    }
+
+
+# ------------------------------------------------------------
+# Actualizar perfil visual del amigo imaginario
+# ------------------------------------------------------------
+def update_imaginary_friend_profile(
+    user_id: int,
+    face_shape: str,
+    primary_color: str,
+    hair_style: str,
+    hair_color: str,
+    eye_style: str,
+    mouth_style: str,
+    accessory: str,
+    background_style: str
+) -> None:
+    """
+    Guarda la configuración visual del avatar del amigo imaginario.
+
+    Parámetros:
+        user_id (int): id del usuario
+        face_shape (str): forma de rostro
+        primary_color (str): color principal
+        hair_style (str): estilo de cabello
+        hair_color (str): color de cabello
+        eye_style (str): estilo de ojos
+        mouth_style (str): estilo de boca
+        accessory (str): accesorio
+        background_style (str): fondo
+    """
+    ensure_imaginary_friend_profile(user_id)
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        UPDATE imaginary_friend_profile
+        SET
+            face_shape = ?,
+            primary_color = ?,
+            hair_style = ?,
+            hair_color = ?,
+            eye_style = ?,
+            mouth_style = ?,
+            accessory = ?,
+            background_style = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ?;
+    """, (
+        str(face_shape).strip(),
+        str(primary_color).strip(),
+        str(hair_style).strip(),
+        str(hair_color).strip(),
+        str(eye_style).strip(),
+        str(mouth_style).strip(),
+        str(accessory).strip(),
+        str(background_style).strip(),
+        user_id
+    ))
+
+    connection.commit()
+    connection.close()
