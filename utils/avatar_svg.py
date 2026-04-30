@@ -378,7 +378,6 @@ def build_friend_avatar_svg(friend_name: str, avatar_profile: dict, size: int = 
     background_style = get_profile_value(profile, "background_style", DEFAULT_FRIEND_AVATAR["background_style"])
 
     safe_name = escape_text(friend_name or "Lumi")
-
     background_color = PRIMARY_COLORS.get(primary_color, PRIMARY_COLORS["azul"])
 
     svg = f"""

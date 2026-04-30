@@ -1,23 +1,29 @@
 # ============================================================
 # mobile_backend/app/schemas.py
-# Esquemas Pydantic del backend móvil.
+# Esquemas Pydantic usados por el backend móvil.
 # ============================================================
 
 from pydantic import BaseModel, Field
 
 
 # ------------------------------------------------------------
-# Usuario
+# Usuario de salida para respuestas del backend
+# Incluye personalización del amigo imaginario.
 # ------------------------------------------------------------
 class UserOut(BaseModel):
     id: int
     username: str
     display_name: str
     is_admin: bool
+    friend_name: str = "Lumi"
+    favorite_color: str = ""
+    favorite_activity: str = ""
+    encouragement_style: str = ""
+    preferred_comfort: str = "cuentos"
 
 
 # ------------------------------------------------------------
-# Registro
+# Payload para registrar usuario
 # ------------------------------------------------------------
 class RegisterRequest(BaseModel):
     username: str = Field(min_length=3, max_length=50)
@@ -26,11 +32,22 @@ class RegisterRequest(BaseModel):
 
 
 # ------------------------------------------------------------
-# Login
+# Payload para login
 # ------------------------------------------------------------
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+# ------------------------------------------------------------
+# Payload para actualizar preferencias del amigo imaginario
+# ------------------------------------------------------------
+class UpdateFriendPreferencesRequest(BaseModel):
+    friend_name: str = Field(min_length=2, max_length=30)
+    favorite_color: str = Field(default="", max_length=30)
+    favorite_activity: str = Field(default="", max_length=50)
+    encouragement_style: str = Field(default="", max_length=80)
+    preferred_comfort: str = Field(default="cuentos", max_length=30)
 
 
 # ------------------------------------------------------------
@@ -43,7 +60,7 @@ class AuthResponse(BaseModel):
 
 
 # ------------------------------------------------------------
-# Conversación
+# Conversación devuelta por la API
 # ------------------------------------------------------------
 class ConversationOut(BaseModel):
     id: int
@@ -55,7 +72,14 @@ class ConversationOut(BaseModel):
 
 
 # ------------------------------------------------------------
-# Mensaje
+# Payload opcional para crear conversación
+# ------------------------------------------------------------
+class CreateConversationRequest(BaseModel):
+    module: str
+
+
+# ------------------------------------------------------------
+# Mensaje individual devuelto por la API
 # ------------------------------------------------------------
 class MessageOut(BaseModel):
     id: int
@@ -65,21 +89,14 @@ class MessageOut(BaseModel):
 
 
 # ------------------------------------------------------------
-# Crear conversación
-# ------------------------------------------------------------
-class CreateConversationRequest(BaseModel):
-    module: str
-
-
-# ------------------------------------------------------------
-# Enviar mensaje
+# Payload para enviar mensaje al chat
 # ------------------------------------------------------------
 class SendMessageRequest(BaseModel):
     content: str = Field(min_length=1, max_length=12000)
 
 
 # ------------------------------------------------------------
-# Respuesta al enviar mensaje
+# Respuesta al enviar un mensaje
 # ------------------------------------------------------------
 class SendMessageResponse(BaseModel):
     user_message: MessageOut
@@ -87,7 +104,7 @@ class SendMessageResponse(BaseModel):
 
 
 # ------------------------------------------------------------
-# Artículo
+# Artículo de biblioteca devuelto por la API
 # ------------------------------------------------------------
 class ArticleOut(BaseModel):
     id: int

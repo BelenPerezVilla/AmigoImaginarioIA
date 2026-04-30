@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "Amigo Imaginario",
+    "slug": "amigo-imaginario-mobile",
+    "scheme": "amigoimaginario",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "plugins": [
+      "expo-router",
+      "expo-secure-store"
+    ],
+    "android": {
+      "package": "com.amigoimaginario.mobile"
+    },
+    "ios": {
+      "bundleIdentifier": "com.amigoimaginario.mobile"
+    }
+  }
+}

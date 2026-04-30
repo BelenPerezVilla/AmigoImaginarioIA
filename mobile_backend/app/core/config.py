@@ -13,8 +13,14 @@ load_dotenv()
 
 # ------------------------------------------------------------
 # Configuración JWT
+# La clave debe tener al menos 32 caracteres para evitar
+# advertencias de seguridad con HS256.
 # ------------------------------------------------------------
-JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me").strip()
+JWT_SECRET = os.getenv(
+    "JWT_SECRET",
+    "amigo_imaginario_mobile_clave_super_segura_2026"
+).strip()
+
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256").strip()
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "43200"))
 

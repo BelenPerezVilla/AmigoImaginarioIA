@@ -235,6 +235,33 @@ def initialize_database() -> None:
         ADD COLUMN preferred_comfort TEXT NOT NULL DEFAULT 'cuentos';
     """)
     connection.commit()
+
+    # --------------------------------------------------------
+# Migraciones para autenticación con Google
+# --------------------------------------------------------
+    if not column_exists("users", "google_sub"):
+        cursor.execute("""
+        ALTER TABLE users
+        ADD COLUMN google_sub TEXT;
+        """)
+    connection.commit()
+
+    if not column_exists("users", "auth_provider"):
+        cursor.execute("""
+        ALTER TABLE users
+        ADD COLUMN auth_provider TEXT NOT NULL DEFAULT 'local';
+        """)
+    connection.commit()
+
+# --------------------------------------------------------
+# Índice único para google_sub cuando exista
+# --------------------------------------------------------
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub
+        ON users(google_sub)
+        WHERE google_sub IS NOT NULL;
+    """)
+    connection.commit()
     # --------------------------------------------------------
     # Índices
     # --------------------------------------------------------
@@ -2331,3 +2358,202 @@ def update_imaginary_friend_profile(
 
     connection.commit()
     connection.close()
+# ============================================================
+# Funciones para login con Google / OIDC
+# ============================================================
+
+# ------------------------------------------------------------
+# Obtener usuario por google_sub
+# ------------------------------------------------------------
+def get_user_by_google_sub(google_sub: str) -> Optional[dict]:
+    """
+    Busca un usuario por el identificador único de Google.
+
+    Parámetros:
+        google_sub (str): identificador único devuelto por Google
+
+    Retorna:
+        Optional[dict]: usuario encontrado o None
+    """
+    google_sub_clean = str(google_sub or "").strip()
+
+    if not google_sub_clean:
+        return None
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            id,
+            username,
+            display_name,
+            is_admin,
+            friend_name,
+            favorite_color,
+            favorite_activity,
+            encouragement_style,
+            preferred_comfort,
+            created_at
+        FROM users
+        WHERE google_sub = ?;
+    """, (google_sub_clean,))
+
+    row = cursor.fetchone()
+    connection.close()
+
+    if not row:
+        return None
+
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "display_name": row["display_name"],
+        "is_admin": bool(row["is_admin"]),
+        "friend_name": row["friend_name"] or "Lumi",
+        "favorite_color": row["favorite_color"] or "",
+        "favorite_activity": row["favorite_activity"] or "",
+        "encouragement_style": row["encouragement_style"] or "",
+        "preferred_comfort": row["preferred_comfort"] or "cuentos",
+        "created_at": row["created_at"]
+    }
+
+
+# ------------------------------------------------------------
+# Verificar si existe un username
+# ------------------------------------------------------------
+def username_exists(username: str) -> bool:
+    """
+    Revisa si un username ya existe en la tabla users.
+
+    Parámetros:
+        username (str): nombre de usuario a validar
+
+    Retorna:
+        bool: True si ya existe
+    """
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT 1
+        FROM users
+        WHERE username = ?;
+    """, (username,))
+
+    exists = cursor.fetchone() is not None
+    connection.close()
+    return exists
+
+
+# ------------------------------------------------------------
+# Generar username único a partir del email
+# ------------------------------------------------------------
+def generate_unique_username_from_email(email: str) -> str:
+    """
+    Genera un username único usando el email de Google.
+
+    Parámetros:
+        email (str): correo electrónico del usuario
+
+    Retorna:
+        str: username disponible
+    """
+    email_clean = str(email or "").strip().lower()
+    base_username = email_clean or "google_user"
+
+    if not username_exists(base_username):
+        return base_username
+
+    counter = 1
+    while True:
+        candidate = f"{base_username}_{counter}"
+        if not username_exists(candidate):
+            return candidate
+        counter += 1
+
+
+# ------------------------------------------------------------
+# Crear usuario local desde Google
+# ------------------------------------------------------------
+def create_google_user(google_sub: str, email: str, display_name: str = "") -> dict:
+    """
+    Crea un usuario local a partir de identidad OIDC de Google.
+
+    Parámetros:
+        google_sub (str): identificador único de Google
+        email (str): correo del usuario
+        display_name (str): nombre visible
+
+    Retorna:
+        dict: usuario creado
+    """
+    google_sub_clean = str(google_sub or "").strip()
+    email_clean = str(email or "").strip().lower()
+    display_name_clean = str(display_name or "").strip() or email_clean or "Usuario Google"
+
+    if not google_sub_clean:
+        raise ValueError("google_sub es obligatorio para crear un usuario Google.")
+
+    if not email_clean:
+        raise ValueError("El email es obligatorio para crear un usuario Google.")
+
+    existing = get_user_by_google_sub(google_sub_clean)
+    if existing:
+        return existing
+
+    username_final = generate_unique_username_from_email(email_clean)
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    # --------------------------------------------------------
+    # Determinar si este usuario debe ser administrador
+    # --------------------------------------------------------
+    cursor.execute("""
+        SELECT COUNT(*) AS total
+        FROM users
+        WHERE is_admin = 1;
+    """)
+    total_admins = cursor.fetchone()["total"]
+    is_admin = 1 if total_admins == 0 else 0
+
+    cursor.execute("""
+        INSERT INTO users (
+            username,
+            display_name,
+            password_hash,
+            is_admin,
+            friend_name,
+            favorite_color,
+            favorite_activity,
+            encouragement_style,
+            preferred_comfort,
+            google_sub,
+            auth_provider
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    """, (
+        username_final,
+        display_name_clean,
+        "",
+        is_admin,
+        "Lumi",
+        "",
+        "",
+        "",
+        "cuentos",
+        google_sub_clean,
+        "google"
+    ))
+
+    user_id = cursor.lastrowid
+    connection.commit()
+    connection.close()
+
+    usuario = get_user_by_id(user_id)
+
+    if not usuario:
+        raise ValueError("No se pudo recuperar el usuario Google recién creado.")
+
+    return usuario

@@ -32,6 +32,22 @@ router = APIRouter(prefix="/api/chats", tags=["chats"])
 
 
 # ------------------------------------------------------------
+# Construir perfil suave del usuario actual
+# ------------------------------------------------------------
+def build_friend_profile(current_user: dict) -> dict:
+    """
+    Construye el perfil suave del amigo imaginario a partir
+    del usuario autenticado.
+    """
+    return {
+        "favorite_color": current_user.get("favorite_color", "") or "",
+        "favorite_activity": current_user.get("favorite_activity", "") or "",
+        "encouragement_style": current_user.get("encouragement_style", "") or "",
+        "preferred_comfort": current_user.get("preferred_comfort", "cuentos") or "cuentos",
+    }
+
+
+# ------------------------------------------------------------
 # Listar conversaciones por módulo
 # ------------------------------------------------------------
 @router.get("/{module}", response_model=list[ConversationOut])
@@ -135,7 +151,9 @@ def send_message_to_conversation(
             detail="Conversación no encontrada."
         )
 
+    # --------------------------------------------------------
     # Guardar mensaje del usuario
+    # --------------------------------------------------------
     user_message_id = add_message(
         conversation_id=conversation_id,
         role="user",
@@ -148,7 +166,9 @@ def send_message_to_conversation(
         user_message=payload.content
     )
 
+    # --------------------------------------------------------
     # Reconstruir historial actual para generar respuesta
+    # --------------------------------------------------------
     mensajes = get_messages_by_conversation(
         conversation_id=conversation_id,
         user_id=current_user["id"]
@@ -162,7 +182,9 @@ def send_message_to_conversation(
         for message in mensajes
     ]
 
+    # --------------------------------------------------------
     # Seleccionar generador según módulo
+    # --------------------------------------------------------
     if conversation["module"] == "biblioteca_inteligente":
         assistant_content = generar_respuesta_biblioteca_rag(
             mensajes=mensajes_prompt
@@ -170,10 +192,14 @@ def send_message_to_conversation(
     else:
         assistant_content = generar_respuesta(
             modulo=conversation["module"],
-            mensajes=mensajes_prompt
+            mensajes=mensajes_prompt,
+            friend_name=current_user.get("friend_name", "Lumi") or "Lumi",
+            friend_profile=build_friend_profile(current_user),
         )
 
+    # --------------------------------------------------------
     # Guardar respuesta de la IA
+    # --------------------------------------------------------
     assistant_message_id = add_message(
         conversation_id=conversation_id,
         role="assistant",

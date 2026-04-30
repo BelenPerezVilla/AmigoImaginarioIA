@@ -12,12 +12,14 @@
 # - feedback y métricas
 # - Amigo Imaginario con nombre, memoria suave e iniciativas
 # - sesión de creación con avatar SVG personalizable
+# - acompañante animado al lado del chat
 # ============================================================
 
 # ------------------------------------------------------------
 # Importaciones estándar
 # ------------------------------------------------------------
 from datetime import datetime
+from urllib.parse import quote
 import csv
 import io
 import json
@@ -41,6 +43,8 @@ from database.chat_db import (
     create_article,
     create_conversation,
     create_user,
+    create_google_user,
+    get_user_by_google_sub,
     delete_article,
     get_article_by_id,
     get_conversation_by_id,
@@ -109,6 +113,40 @@ st.set_page_config(
     page_icon="💙",
     layout="wide"
 )
+
+
+# ------------------------------------------------------------
+# Render HTML seguro con fallback
+# ------------------------------------------------------------
+def render_html_block(html: str) -> None:
+    """
+    Renderiza HTML usando st.html si existe, y si no,
+    usa st.markdown con unsafe_allow_html.
+
+    Parámetros:
+        html (str): bloque HTML a renderizar
+    """
+    if hasattr(st, "html"):
+        st.html(html)
+    else:
+        st.markdown(html, unsafe_allow_html=True)
+
+
+# ------------------------------------------------------------
+# Convertir SVG a data URI para mostrarlo en HTML
+# ------------------------------------------------------------
+def svg_to_data_uri(svg: str) -> str:
+    """
+    Convierte un SVG en un data URI seguro para usar dentro
+    de una etiqueta <img>.
+
+    Parámetros:
+        svg (str): contenido SVG
+
+    Retorna:
+        str: data URI
+    """
+    return f"data:image/svg+xml;utf8,{quote(svg)}"
 
 
 # ------------------------------------------------------------
@@ -185,6 +223,12 @@ def inicializar_estado() -> None:
 
     if "friend_avatar" not in st.session_state:
         st.session_state.friend_avatar = dict(DEFAULT_FRIEND_AVATAR)
+
+    if "friend_companion_state" not in st.session_state:
+        st.session_state.friend_companion_state = "calma"
+
+    if "friend_companion_message" not in st.session_state:
+        st.session_state.friend_companion_message = "Estoy aquí contigo."
 
 
 # ------------------------------------------------------------
@@ -351,6 +395,80 @@ def aplicar_estilos() -> None:
                 line-height: 1.45;
                 margin-bottom: 0.65rem;
             }}
+
+            .friend-companion-shell {{
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 12px;
+                padding: 16px;
+                border-radius: 20px;
+                background: rgba(49, 100, 185, 0.10);
+                border: 1px solid rgba(49, 100, 185, 0.20);
+            }}
+
+            .friend-companion-avatar {{
+                animation: friendFloat 3.2s ease-in-out infinite;
+                transform-origin: center;
+            }}
+
+            .friend-companion-avatar img {{
+                display: block;
+                width: 220px;
+                height: auto;
+            }}
+
+            .friend-companion-bubble {{
+                width: 100%;
+                padding: 12px 14px;
+                border-radius: 16px;
+                background: rgba(255,255,255,0.06);
+                border: 1px solid rgba(255,255,255,0.08);
+                line-height: 1.45;
+                font-size: 0.96rem;
+                box-sizing: border-box;
+            }}
+
+            .friend-companion-badge {{
+                display: inline-block;
+                padding: 6px 10px;
+                border-radius: 999px;
+                font-size: 0.85rem;
+                font-weight: 700;
+                background: rgba(90,169,255,0.16);
+                border: 1px solid rgba(90,169,255,0.26);
+            }}
+
+            @keyframes friendFloat {{
+                0%   {{ transform: translateY(0px) scale(1); }}
+                50%  {{ transform: translateY(-8px) scale(1.01); }}
+                100% {{ transform: translateY(0px) scale(1); }}
+            }}
+
+            .friend-companion-shell.mood-feliz .friend-companion-badge {{
+                background: rgba(102,204,153,0.18);
+                border-color: rgba(102,204,153,0.28);
+            }}
+
+            .friend-companion-shell.mood-cuento .friend-companion-badge {{
+                background: rgba(167,123,255,0.18);
+                border-color: rgba(167,123,255,0.28);
+            }}
+
+            .friend-companion-shell.mood-juego .friend-companion-badge {{
+                background: rgba(255,215,102,0.18);
+                border-color: rgba(255,215,102,0.28);
+            }}
+
+            .friend-companion-shell.mood-animo .friend-companion-badge {{
+                background: rgba(255,139,194,0.18);
+                border-color: rgba(255,139,194,0.28);
+            }}
+
+            .friend-companion-shell.mood-calma .friend-companion-badge {{
+                background: rgba(90,169,255,0.16);
+                border-color: rgba(90,169,255,0.26);
+            }}
         </style>
         """,
         unsafe_allow_html=True
@@ -405,6 +523,9 @@ def iniciar_sesion(usuario: dict) -> None:
     # --------------------------------------------------------
     st.session_state.friend_avatar = get_imaginary_friend_profile(usuario["id"])
 
+    st.session_state.friend_companion_state = "calma"
+    st.session_state.friend_companion_message = "Estoy aquí contigo."
+
     st.session_state.modulo_actual = "amigo_imaginario"
     st.session_state.ultimo_modulo = "amigo_imaginario"
     st.session_state.conversation_id = None
@@ -431,6 +552,8 @@ def cerrar_sesion() -> None:
         "preferred_comfort": "cuentos"
     }
     st.session_state.friend_avatar = dict(DEFAULT_FRIEND_AVATAR)
+    st.session_state.friend_companion_state = "calma"
+    st.session_state.friend_companion_message = "Estoy aquí contigo."
     st.session_state.modulo_actual = "amigo_imaginario"
     st.session_state.ultimo_modulo = "amigo_imaginario"
     st.session_state.conversation_id = None
@@ -771,6 +894,42 @@ def render_feedback_metrics_panel() -> None:
 
 
 # ------------------------------------------------------------
+# Actualizar mood del acompañante
+# ------------------------------------------------------------
+def update_friend_companion_state(trigger: str = "") -> None:
+    """
+    Ajusta el estado visual del acompañante según el disparador.
+
+    Parámetros:
+        trigger (str): pista del contexto actual
+    """
+    trigger_clean = str(trigger or "").strip().lower()
+
+    if "cuento" in trigger_clean:
+        st.session_state.friend_companion_state = "cuento"
+        st.session_state.friend_companion_message = "Tengo un cuentito listo para ti."
+        return
+
+    if "juego" in trigger_clean:
+        st.session_state.friend_companion_state = "juego"
+        st.session_state.friend_companion_message = "Podemos jugar algo suave y bonito."
+        return
+
+    if "respira" in trigger_clean or "respiración" in trigger_clean or "respiracion" in trigger_clean:
+        st.session_state.friend_companion_state = "calma"
+        st.session_state.friend_companion_message = "Vamos despacito. Estoy contigo."
+        return
+
+    if "ánimo" in trigger_clean or "animo" in trigger_clean:
+        st.session_state.friend_companion_state = "animo"
+        st.session_state.friend_companion_message = "Quiero darte palabras bonitas."
+        return
+
+    st.session_state.friend_companion_state = "feliz"
+    st.session_state.friend_companion_message = "Estoy aquí contigo y te acompaño."
+
+
+# ------------------------------------------------------------
 # Vista previa del avatar del amigo imaginario
 # ------------------------------------------------------------
 def render_friend_avatar_preview() -> None:
@@ -786,10 +945,45 @@ def render_friend_avatar_preview() -> None:
     col_1, col_2, col_3 = st.columns([1, 2, 1])
 
     with col_2:
-        st.image(
-            avatar_svg,
-            width="content"
-        )
+        st.image(avatar_svg, width=260)
+
+
+# ------------------------------------------------------------
+# Panel del acompañante al lado del chat
+# ------------------------------------------------------------
+def render_friend_companion_panel() -> None:
+    """
+    Muestra el avatar y una burbuja de acompañamiento
+    al costado del chat.
+    """
+    avatar_svg = build_friend_avatar_svg(
+        friend_name=st.session_state.friend_name,
+        avatar_profile=st.session_state.friend_avatar,
+        size=220
+    )
+
+    avatar_src = svg_to_data_uri(avatar_svg)
+    mood = st.session_state.friend_companion_state
+    bubble_text = st.session_state.friend_companion_message
+
+    companion_html = f"""
+    <div class="friend-companion-shell mood-{mood}">
+        <div class="friend-companion-badge">
+            {st.session_state.friend_name} te acompaña
+        </div>
+
+        <div class="friend-companion-avatar">
+            <img src="{avatar_src}" alt="{st.session_state.friend_name}" />
+        </div>
+
+        <div class="friend-companion-bubble">
+            {bubble_text}
+        </div>
+    </div>
+    """
+
+    render_html_block(companion_html)
+
 
 # ------------------------------------------------------------
 # Panel de memoria suave
@@ -897,27 +1091,31 @@ def render_friend_initiatives_panel() -> str | None:
     )
 
     col_1, col_2, col_3, col_4, col_5 = st.columns(5)
-
     mensaje_iniciativa = None
 
     with col_1:
         if st.button("Cuento", key="friend_init_cuento", width="stretch"):
+            update_friend_companion_state("cuento")
             mensaje_iniciativa = iniciativas["cuento"]
 
     with col_2:
         if st.button("Juego", key="friend_init_juego", width="stretch"):
+            update_friend_companion_state("juego")
             mensaje_iniciativa = iniciativas["juego"]
 
     with col_3:
         if st.button("Respirar", key="friend_init_respiracion", width="stretch"):
+            update_friend_companion_state("respiracion")
             mensaje_iniciativa = iniciativas["respiracion"]
 
     with col_4:
         if st.button("Ánimo", key="friend_init_animo", width="stretch"):
+            update_friend_companion_state("animo")
             mensaje_iniciativa = iniciativas["animo"]
 
     with col_5:
         if st.button("Sorpresa", key="friend_init_sorpresa", width="stretch"):
+            update_friend_companion_state("feliz")
             mensaje_iniciativa = iniciativas["sorpresa"]
 
     return mensaje_iniciativa
@@ -1030,17 +1228,11 @@ def render_friend_creation_panel(user_id: int) -> None:
 
             if submit_creation:
                 try:
-                    # ----------------------------------------
-                    # Guardar nombre
-                    # ----------------------------------------
                     update_friend_name(
                         user_id=user_id,
                         friend_name=friend_name_input
                     )
 
-                    # ----------------------------------------
-                    # Guardar avatar
-                    # ----------------------------------------
                     update_imaginary_friend_profile(
                         user_id=user_id,
                         face_shape=face_shape,
@@ -1053,9 +1245,6 @@ def render_friend_creation_panel(user_id: int) -> None:
                         background_style=background_style
                     )
 
-                    # ----------------------------------------
-                    # Refrescar estado en sesión
-                    # ----------------------------------------
                     st.session_state.friend_name = friend_name_input.strip()
                     st.session_state.friend_avatar = {
                         "face_shape": face_shape,
@@ -1076,27 +1265,715 @@ def render_friend_creation_panel(user_id: int) -> None:
 
 
 # ------------------------------------------------------------
+# Panel de biblioteca estructurada
+# ------------------------------------------------------------
+def render_biblioteca_panel() -> None:
+    """
+    Renderiza el panel de búsqueda y lectura de artículos.
+    """
+    categorias = ["Todas"] + list_article_categories()
+    tipos_lector = ["Todos"] + list_reader_types()
+
+    if st.session_state.article_category_filter not in categorias:
+        st.session_state.article_category_filter = "Todas"
+
+    if st.session_state.article_reader_filter not in tipos_lector:
+        st.session_state.article_reader_filter = "Todos"
+
+    st.markdown(
+        """
+        <div class="info-card">
+            <div class="info-title">Biblioteca estructurada</div>
+            <div class="info-text">
+                Busca artículos por tema o tipo de lector. También puedes usar cualquier artículo como base
+                para conversar con el asistente educativo.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    col_f1, col_f2, col_f3 = st.columns([2, 1, 1], gap="medium")
+
+    with col_f1:
+        st.text_input(
+            "Buscar artículo",
+            key="article_search_text",
+            placeholder="Ejemplo: dislexia, ansiedad, crisis, aula..."
+        )
+
+    with col_f2:
+        st.selectbox(
+            "Categoría",
+            options=categorias,
+            key="article_category_filter"
+        )
+
+    with col_f3:
+        st.selectbox(
+            "Tipo de lector",
+            options=tipos_lector,
+            key="article_reader_filter"
+        )
+
+    resultados = search_articles(
+        search_text=st.session_state.article_search_text,
+        category=st.session_state.article_category_filter,
+        reader_type=st.session_state.article_reader_filter,
+        limit=100
+    )
+
+    ids_resultados = [articulo["id"] for articulo in resultados]
+
+    if resultados:
+        if st.session_state.selected_article_id not in ids_resultados:
+            st.session_state.selected_article_id = resultados[0]["id"]
+    else:
+        st.session_state.selected_article_id = None
+
+    col_lista, col_detalle = st.columns([1.05, 1.45], gap="large")
+
+    with col_lista:
+        st.caption(f"Resultados encontrados: {len(resultados)}")
+
+        if not resultados:
+            st.warning("No encontré artículos con esos filtros.")
+        else:
+            for articulo in resultados:
+                st.markdown(
+                    f"""
+                    <div class="article-card">
+                        <div class="article-title">{articulo["title"]}</div>
+                        <div class="article-meta">{articulo["category"]} · {articulo["reader_type"]}</div>
+                        <div class="article-desc">{articulo["short_description"]}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                if st.button(
+                    "Abrir artículo",
+                    key=f"abrir_articulo_{articulo['id']}",
+                    width="stretch"
+                ):
+                    st.session_state.selected_article_id = articulo["id"]
+                    st.rerun()
+
+    with col_detalle:
+        if not st.session_state.selected_article_id:
+            st.info("Selecciona un artículo para leerlo aquí.")
+            return
+
+        articulo = get_article_by_id(st.session_state.selected_article_id)
+
+        if not articulo:
+            st.warning("No pude cargar el artículo seleccionado.")
+            return
+
+        st.markdown(f"## {articulo['title']}")
+        st.caption(f"{articulo['category']} · {articulo['reader_type']}")
+
+        st.markdown(
+            f"""
+            <div class="info-card">
+                <div class="info-text">{articulo["short_description"]}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        st.markdown(articulo["content"])
+
+        col_a, col_b = st.columns(2)
+
+        with col_a:
+            if st.button(
+                "Llevar este artículo al chat educativo",
+                key=f"usar_articulo_chat_{articulo['id']}",
+                width="stretch"
+            ):
+                st.session_state.pending_message = (
+                    f"Quiero entender mejor este artículo.\n\n"
+                    f"Título: {articulo['title']}\n"
+                    f"Categoría: {articulo['category']}\n"
+                    f"Tipo de lector: {articulo['reader_type']}\n"
+                    f"Resumen: {articulo['short_description']}\n\n"
+                    f"Contenido del artículo:\n{articulo['content']}\n\n"
+                    "Explícamelo con lenguaje sencillo y dame 3 ideas prácticas."
+                )
+                st.rerun()
+
+        with col_b:
+            if st.button(
+                "Crear un chat nuevo sobre este tema",
+                key=f"nuevo_chat_articulo_{articulo['id']}",
+                width="stretch"
+            ):
+                st.session_state.pending_message = (
+                    f"Quiero hablar sobre este tema: {articulo['title']}. "
+                    "Ayúdame a entenderlo mejor con palabras sencillas."
+                )
+                st.session_state.conversation_id = None
+                st.session_state.mensajes = []
+                st.rerun()
+
+
+# ------------------------------------------------------------
+# Panel para convertir documentos en artículos
+# ------------------------------------------------------------
+def render_document_ingestion_panel() -> None:
+    """
+    Permite subir un documento y convertirlo en un artículo
+    para la biblioteca usando Gemini.
+    """
+    st.markdown(
+        """
+        <div class="info-card">
+            <div class="info-title">Generar artículo desde documento</div>
+            <div class="info-text">
+                Sube un PDF, TXT o MD. La app extraerá el texto y generará un artículo estructurado
+                para guardarlo en la biblioteca.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    uploaded_doc = st.file_uploader(
+        "Sube un documento",
+        type=["pdf", "txt", "md"],
+        key="admin_document_uploader"
+    )
+
+    col_meta_1, col_meta_2 = st.columns(2)
+
+    with col_meta_1:
+        categoria_destino = st.text_input(
+            "Categoría destino",
+            value="General",
+            key="admin_doc_category"
+        )
+
+    with col_meta_2:
+        reader_type_destino = st.selectbox(
+            "Tipo de lector destino",
+            options=["Usuario", "Padre/Cuidador", "Docente"],
+            key="admin_doc_reader_type"
+        )
+
+    titulo_sugerido = st.text_input(
+        "Título sugerido (opcional)",
+        placeholder="Si lo dejas vacío, se tomará del archivo o lo propondrá la IA",
+        key="admin_doc_title"
+    )
+
+    info_documento = None
+
+    if uploaded_doc is not None:
+        try:
+            info_documento = extract_text_from_uploaded_file(
+                uploaded_doc,
+                max_chars=45000
+            )
+
+            col_info_1, col_info_2, col_info_3 = st.columns(3)
+
+            with col_info_1:
+                st.caption(f"Archivo: {info_documento['filename']}")
+
+            with col_info_2:
+                st.caption(f"Texto útil: {info_documento['used_length']} caracteres")
+
+            with col_info_3:
+                if info_documento["was_truncated"]:
+                    st.caption("Se usará una parte del texto")
+                else:
+                    st.caption("Se usará el texto completo")
+
+            with st.expander("Vista previa del texto extraído"):
+                st.text(info_documento["preview"])
+
+        except Exception as error:
+            st.error(f"No pude leer el documento: {error}")
+
+    col_accion_1, col_accion_2 = st.columns(2)
+
+    with col_accion_1:
+        generar_guardar = st.button(
+            "Generar y guardar artículo",
+            width="stretch",
+            key="admin_generate_article_from_doc"
+        )
+
+    with col_accion_2:
+        llevar_chat = st.button(
+            "Usar documento como base para chat",
+            width="stretch",
+            key="admin_send_doc_to_chat"
+        )
+
+    if generar_guardar:
+        if uploaded_doc is None:
+            st.warning("Primero sube un documento.")
+        else:
+            try:
+                with st.spinner("Extrayendo texto y generando artículo..."):
+                    info_documento = extract_text_from_uploaded_file(
+                        uploaded_doc,
+                        max_chars=45000
+                    )
+
+                    articulo_generado = generar_articulo_desde_documento(
+                        texto_fuente=info_documento["text"],
+                        category=categoria_destino,
+                        reader_type=reader_type_destino,
+                        suggested_title=titulo_sugerido,
+                        source_name=info_documento["base_title"]
+                    )
+
+                    article_id = create_article(
+                        title=articulo_generado["title"],
+                        category=articulo_generado["category"],
+                        reader_type=articulo_generado["reader_type"],
+                        short_description=articulo_generado["short_description"],
+                        content=articulo_generado["content"]
+                    )
+
+                st.session_state.selected_article_id = article_id
+                st.success("Artículo generado y guardado correctamente.")
+
+                if info_documento["was_truncated"]:
+                    st.info(
+                        "El documento era largo, así que se usó una parte del texto para generar el artículo."
+                    )
+
+                st.rerun()
+
+            except Exception as error:
+                st.error(f"No se pudo generar el artículo: {error}")
+
+    if llevar_chat:
+        if uploaded_doc is None:
+            st.warning("Primero sube un documento.")
+        else:
+            try:
+                info_documento = extract_text_from_uploaded_file(
+                    uploaded_doc,
+                    max_chars=20000
+                )
+
+                st.session_state.pending_message = (
+                    f"Quiero entender mejor este documento.\n\n"
+                    f"Archivo: {info_documento['filename']}\n"
+                    f"Título sugerido: {titulo_sugerido or info_documento['base_title']}\n"
+                    f"Categoría sugerida: {categoria_destino}\n"
+                    f"Tipo de lector: {reader_type_destino}\n\n"
+                    f"Contenido del documento:\n{info_documento['text']}\n\n"
+                    "Explícamelo con lenguaje sencillo y conviértelo en ideas prácticas."
+                )
+
+                st.success("Documento enviado como base para el chat educativo.")
+                st.rerun()
+
+            except Exception as error:
+                st.error(f"No se pudo preparar el documento para el chat: {error}")
+
+
+# ------------------------------------------------------------
+# Panel de administración
+# ------------------------------------------------------------
+def render_admin_panel() -> None:
+    """
+    Renderiza el panel de administración para artículos,
+    importación/exportación, documentos, métricas y usuarios.
+    """
+    st.markdown(
+        """
+        <div class="info-card">
+            <div class="info-title">Panel de administración</div>
+            <div class="info-text">
+                Desde aquí puedes crear, editar, eliminar, importar, exportar o generar artículos desde documentos,
+                revisar métricas de utilidad y gestionar permisos de administrador.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    tab_articulos, tab_import_export, tab_documentos, tab_metricas, tab_usuarios = st.tabs(
+        ["Administrar artículos", "Importar / Exportar", "Documentos", "Métricas", "Usuarios"]
+    )
+
+    with tab_articulos:
+        articulos = search_articles(limit=500)
+
+        opciones_articulos = [("nuevo", "Crear artículo nuevo")]
+        opciones_articulos += [
+            (str(articulo["id"]), f"{articulo['title']} · {articulo['category']} · {articulo['reader_type']}")
+            for articulo in articulos
+        ]
+
+        valores_opciones = [opcion[0] for opcion in opciones_articulos]
+        etiquetas_opciones = {opcion[0]: opcion[1] for opcion in opciones_articulos}
+
+        seleccion = st.selectbox(
+            "Selecciona un artículo para editar o crea uno nuevo",
+            options=valores_opciones,
+            format_func=lambda clave: etiquetas_opciones[clave]
+        )
+
+        articulo_actual = None
+
+        if seleccion != "nuevo":
+            articulo_actual = get_article_by_id(int(seleccion))
+            st.session_state.admin_edit_article_id = int(seleccion)
+        else:
+            st.session_state.admin_edit_article_id = None
+
+        with st.form("admin_article_form"):
+            title = st.text_input(
+                "Título",
+                value=articulo_actual["title"] if articulo_actual else ""
+            )
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                category = st.text_input(
+                    "Categoría",
+                    value=articulo_actual["category"] if articulo_actual else ""
+                )
+
+            with col2:
+                reader_type = st.selectbox(
+                    "Tipo de lector",
+                    options=["Usuario", "Padre/Cuidador", "Docente"],
+                    index=["Usuario", "Padre/Cuidador", "Docente"].index(
+                        articulo_actual["reader_type"]
+                    ) if articulo_actual and articulo_actual["reader_type"] in ["Usuario", "Padre/Cuidador", "Docente"] else 0
+                )
+
+            short_description = st.text_area(
+                "Descripción breve",
+                value=articulo_actual["short_description"] if articulo_actual else "",
+                height=120
+            )
+
+            content = st.text_area(
+                "Contenido del artículo",
+                value=articulo_actual["content"] if articulo_actual else "",
+                height=320
+            )
+
+            col_guardar, col_eliminar = st.columns(2)
+
+            with col_guardar:
+                submit_save = st.form_submit_button(
+                    "Guardar cambios",
+                    width="stretch"
+                )
+
+            with col_eliminar:
+                submit_delete = st.form_submit_button(
+                    "Eliminar artículo",
+                    width="stretch"
+                )
+
+            if submit_save:
+                try:
+                    if articulo_actual:
+                        update_article(
+                            article_id=articulo_actual["id"],
+                            title=title,
+                            category=category,
+                            reader_type=reader_type,
+                            short_description=short_description,
+                            content=content
+                        )
+                        st.success("Artículo actualizado correctamente.")
+                    else:
+                        new_id = create_article(
+                            title=title,
+                            category=category,
+                            reader_type=reader_type,
+                            short_description=short_description,
+                            content=content
+                        )
+                        st.session_state.selected_article_id = new_id
+                        st.success("Artículo creado correctamente.")
+
+                    st.rerun()
+
+                except ValueError as error:
+                    st.error(str(error))
+
+            if submit_delete:
+                if articulo_actual:
+                    delete_article(articulo_actual["id"])
+
+                    if st.session_state.selected_article_id == articulo_actual["id"]:
+                        st.session_state.selected_article_id = None
+
+                    st.success("Artículo eliminado correctamente.")
+                    st.rerun()
+                else:
+                    st.warning("No hay un artículo seleccionado para eliminar.")
+
+    with tab_import_export:
+        st.markdown("### Plantillas")
+        col_temp_1, col_temp_2 = st.columns(2)
+
+        with col_temp_1:
+            st.download_button(
+                "Descargar plantilla CSV",
+                data=build_template_csv(),
+                file_name="plantilla_articulos.csv",
+                mime="text/csv",
+                width="stretch"
+            )
+
+        with col_temp_2:
+            st.download_button(
+                "Descargar plantilla JSON",
+                data=build_template_json(),
+                file_name="plantilla_articulos.json",
+                mime="application/json",
+                width="stretch"
+            )
+
+        st.markdown("### Importar artículos")
+        st.caption("Columnas esperadas: title, category, reader_type, short_description, content")
+
+        duplicate_mode_ui = st.selectbox(
+            "Cómo tratar duplicados",
+            options=[
+                "Omitir duplicados",
+                "Reemplazar duplicados",
+                "Permitir duplicados"
+            ]
+        )
+
+        duplicate_mode_map = {
+            "Omitir duplicados": "skip",
+            "Reemplazar duplicados": "replace",
+            "Permitir duplicados": "allow"
+        }
+
+        uploaded_file = st.file_uploader(
+            "Sube un archivo CSV o JSON",
+            type=["csv", "json"]
+        )
+
+        parsed_rows = []
+
+        if uploaded_file is not None:
+            try:
+                parsed_rows = parse_uploaded_articles(uploaded_file)
+                st.success(f"Archivo leído correctamente. Registros detectados: {len(parsed_rows)}")
+
+                with st.expander("Vista previa de los primeros registros"):
+                    st.json(parsed_rows[:3])
+
+            except Exception as error:
+                st.error(f"No pude leer el archivo: {error}")
+
+        if st.button("Importar artículos", width="stretch"):
+            if not uploaded_file:
+                st.warning("Primero sube un archivo CSV o JSON.")
+            else:
+                try:
+                    if not parsed_rows:
+                        parsed_rows = parse_uploaded_articles(uploaded_file)
+
+                    result = import_articles(
+                        records=parsed_rows,
+                        duplicate_mode=duplicate_mode_map[duplicate_mode_ui]
+                    )
+
+                    st.success(
+                        f"Importación terminada. Creados: {result['created']} · "
+                        f"Actualizados: {result['updated']} · "
+                        f"Omitidos: {result['skipped']}"
+                    )
+
+                    if result["errors"]:
+                        with st.expander("Errores detectados durante la importación"):
+                            for error in result["errors"]:
+                                st.write(f"- {error}")
+
+                    st.rerun()
+
+                except Exception as error:
+                    st.error(f"No se pudo importar el archivo: {error}")
+
+        st.markdown("### Exportar artículos")
+        articulos_export = list_all_articles(limit=5000)
+
+        col_exp_1, col_exp_2 = st.columns(2)
+
+        with col_exp_1:
+            st.download_button(
+                "Exportar biblioteca a CSV",
+                data=build_export_csv(articulos_export),
+                file_name="biblioteca_articulos.csv",
+                mime="text/csv",
+                width="stretch"
+            )
+
+        with col_exp_2:
+            st.download_button(
+                "Exportar biblioteca a JSON",
+                data=build_export_json(articulos_export),
+                file_name="biblioteca_articulos.json",
+                mime="application/json",
+                width="stretch"
+            )
+
+    with tab_documentos:
+        render_document_ingestion_panel()
+
+    with tab_metricas:
+        render_feedback_metrics_panel()
+
+    with tab_usuarios:
+        usuarios = list_users(limit=200)
+
+        st.caption("Aquí puedes revisar usuarios y activar o quitar permisos de administrador.")
+
+        for usuario in usuarios:
+            col_info, col_toggle = st.columns([3, 1])
+
+            with col_info:
+                rol = "Administrador" if usuario["is_admin"] else "Usuario"
+                st.markdown(
+                    f"**{usuario['display_name']}**  \n@{usuario['username']} · {rol}"
+                )
+
+            with col_toggle:
+                nuevo_estado = st.checkbox(
+                    "Admin",
+                    value=usuario["is_admin"],
+                    key=f"admin_toggle_{usuario['id']}"
+                )
+
+                if nuevo_estado != usuario["is_admin"]:
+                    set_user_admin_status(
+                        user_id=usuario["id"],
+                        is_admin=nuevo_estado
+                    )
+
+                    if usuario["id"] == st.session_state.user_id:
+                        st.session_state.is_admin = nuevo_estado
+
+                    st.rerun()
+
+
+# ------------------------------------------------------------
+# Obtener datos básicos del usuario OIDC actual
+# ------------------------------------------------------------
+def get_google_oidc_identity() -> dict:
+    """
+    Extrae datos del usuario autenticado por OIDC en Streamlit.
+
+    Retorna:
+        dict: sub, email y name
+    """
+    if not getattr(st.user, "is_logged_in", False):
+        return {
+            "sub": "",
+            "email": "",
+            "name": ""
+        }
+
+    # --------------------------------------------------------
+    # Streamlit expone estos atributos después de st.login()
+    # --------------------------------------------------------
+    google_sub = str(getattr(st.user, "sub", "") or "").strip()
+    email = str(getattr(st.user, "email", "") or "").strip().lower()
+    name = str(getattr(st.user, "name", "") or "").strip()
+
+    return {
+        "sub": google_sub,
+        "email": email,
+        "name": name
+    }
+
+
+# ------------------------------------------------------------
+# Sincronizar sesión local con login de Google
+# ------------------------------------------------------------
+def sync_google_login_to_local_user() -> None:
+    """
+    Si el usuario ya inició sesión con Google mediante OIDC,
+    lo busca en SQLite o lo crea automáticamente y luego
+    inicia sesión local en la app.
+    """
+    if not getattr(st.user, "is_logged_in", False):
+        return
+
+    # --------------------------------------------------------
+    # Si ya existe sesión local activa, no hacer nada
+    # --------------------------------------------------------
+    if st.session_state.user_id is not None:
+        return
+
+    oidc_user = get_google_oidc_identity()
+
+    google_sub = oidc_user["sub"]
+    email = oidc_user["email"]
+    name = oidc_user["name"]
+
+    if not google_sub or not email:
+        st.error("No pude leer correctamente la identidad de Google.")
+        return
+
+    usuario = get_user_by_google_sub(google_sub)
+
+    if not usuario:
+        usuario = create_google_user(
+            google_sub=google_sub,
+            email=email,
+            display_name=name
+        )
+
+    iniciar_sesion(usuario)
+
+
+# ------------------------------------------------------------
+# Cerrar sesión completa local + Google OIDC
+# ------------------------------------------------------------
+def logout_everything() -> None:
+    """
+    Limpia la sesión local y, si existe sesión OIDC, la cierra
+    con Streamlit.
+    """
+    cerrar_sesion()
+
+    if getattr(st.user, "is_logged_in", False):
+        st.logout()
+
+# ------------------------------------------------------------
 # Pantalla de autenticación
 # ------------------------------------------------------------
 def render_auth_screen() -> None:
     """
-    Muestra login y registro.
+    Muestra login local, registro local y acceso con Google.
     """
     st.markdown('<div class="auth-shell">', unsafe_allow_html=True)
 
     st.markdown('<div class="main-title">Amigo Imaginario Neurodivergente</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="main-subtitle">Fase 15.1 · Sesión de creación del amigo imaginario con avatar</div>',
+        '<div class="main-subtitle">Fase 16 · Registro e inicio de sesión con Google</div>',
         unsafe_allow_html=True
     )
 
     st.markdown(
         """
         <div class="hero-card">
-            <div class="hero-title">Una plataforma más completa para conversar, aprender y acompañar</div>
+            <div class="hero-title">Entra como quieras</div>
             <div class="hero-text">
-                Inicia sesión o crea una cuenta para conservar tu historial personal,
-                personalizar tu amigo imaginario y darle un avatar.
+                Puedes usar tu cuenta local o entrar con Google.
+                Si es tu primera vez con Google, tu cuenta local se creará automáticamente.
             </div>
         </div>
         """,
@@ -1112,13 +1989,22 @@ def render_auth_screen() -> None:
                 <div class="info-title">Qué puedes hacer aquí</div>
                 <div class="info-text">
                     • Conversar con un acompañante empático<br>
-                    • Buscar artículos por tema o tipo de lector<br>
                     • Crear y personalizar tu amigo imaginario<br>
-                    • Dar feedback sobre respuestas
+                    • Guardar historial por usuario<br>
+                    • Entrar con cuenta local o con Google
                 </div>
             </div>
             """,
             unsafe_allow_html=True
+        )
+
+        st.markdown("### Acceso con Google")
+        st.caption("Se abrirá el flujo de Google y, al volver, la app te iniciará sesión automáticamente.")
+
+        st.button(
+            "Continuar con Google",
+            width="stretch",
+            on_click=st.login
         )
 
     with col_auth:
@@ -1320,7 +2206,7 @@ def render_app() -> None:
         st.caption(f"@{username} · {rol_sidebar}")
 
         if st.button("Cerrar sesión", width="stretch"):
-            cerrar_sesion()
+            logout_everything()
             st.rerun()
 
         st.divider()
@@ -1387,7 +2273,7 @@ def render_app() -> None:
     )
 
     st.markdown(
-        '<div class="main-subtitle">Fase 15.1 · Sesión de creación del amigo imaginario con avatar</div>',
+        '<div class="main-subtitle">Fase 15.2 · Acompañante animado junto al chat</div>',
         unsafe_allow_html=True
     )
 
@@ -1617,77 +2503,85 @@ def render_app() -> None:
         # Tab Chat
         # ----------------------------------------------------
         with tab_chat:
-            mensaje_desde_ejemplo = None
-            mensaje_desde_iniciativa = None
+            col_chat, col_companion = st.columns([2.3, 1], gap="large")
 
-            st.markdown(
-                f"""
-                <div class="info-card">
-                    <div class="info-title">Ahora estás hablando con {st.session_state.friend_name}</div>
-                    <div class="info-text">
-                        Este amigo imaginario puede acompañar, escuchar, contar mini historias,
-                        proponer juegos tranquilos, iniciar dinámicas suaves y seguir la conversación con más calidez.
+            with col_chat:
+                mensaje_desde_ejemplo = None
+                mensaje_desde_iniciativa = None
+
+                st.markdown(
+                    f"""
+                    <div class="info-card">
+                        <div class="info-title">Ahora estás hablando con {st.session_state.friend_name}</div>
+                        <div class="info-text">
+                            Este amigo imaginario puede acompañar, escuchar, contar mini historias,
+                            proponer juegos tranquilos, iniciar dinámicas suaves y seguir la conversación con más calidez.
+                        </div>
                     </div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-            render_friend_avatar_preview()
-
-            mensaje_desde_iniciativa = render_friend_initiatives_panel()
-
-            if not st.session_state.ui_focus_mode:
-                st.caption("Prueba con uno de estos ejemplos rápidos:")
-
-                col_1, col_2, col_3 = st.columns(3)
-                ejemplos = info_modulo["ejemplos"]
-
-                with col_1:
-                    if st.button(
-                        ejemplos[0],
-                        key="ejemplo_1_amigo_imaginario",
-                        width="stretch"
-                    ):
-                        mensaje_desde_ejemplo = ejemplos[0]
-
-                with col_2:
-                    if st.button(
-                        ejemplos[1],
-                        key="ejemplo_2_amigo_imaginario",
-                        width="stretch"
-                    ):
-                        mensaje_desde_ejemplo = ejemplos[1]
-
-                with col_3:
-                    if st.button(
-                        ejemplos[2],
-                        key="ejemplo_3_amigo_imaginario",
-                        width="stretch"
-                    ):
-                        mensaje_desde_ejemplo = ejemplos[2]
-
-            render_chat_history_with_feedback(
-                user_id=user_id,
-                modulo_actual=modulo_actual
-            )
-
-            mensaje_chat = st.chat_input(info_modulo["placeholder"])
-            mensaje_usuario = None
-
-            if mensaje_desde_iniciativa:
-                mensaje_usuario = mensaje_desde_iniciativa
-            elif mensaje_desde_ejemplo:
-                mensaje_usuario = mensaje_desde_ejemplo
-            elif mensaje_chat:
-                mensaje_usuario = mensaje_chat
-
-            if mensaje_usuario:
-                procesar_mensaje_chat(
-                    user_id=user_id,
-                    modulo_actual=modulo_actual,
-                    mensaje_usuario=mensaje_usuario
+                    """,
+                    unsafe_allow_html=True
                 )
+
+                mensaje_desde_iniciativa = render_friend_initiatives_panel()
+
+                if not st.session_state.ui_focus_mode:
+                    st.caption("Prueba con uno de estos ejemplos rápidos:")
+
+                    col_1, col_2, col_3 = st.columns(3)
+                    ejemplos = info_modulo["ejemplos"]
+
+                    with col_1:
+                        if st.button(
+                            ejemplos[0],
+                            key="ejemplo_1_amigo_imaginario",
+                            width="stretch"
+                        ):
+                            update_friend_companion_state("feliz")
+                            mensaje_desde_ejemplo = ejemplos[0]
+
+                    with col_2:
+                        if st.button(
+                            ejemplos[1],
+                            key="ejemplo_2_amigo_imaginario",
+                            width="stretch"
+                        ):
+                            update_friend_companion_state("juego")
+                            mensaje_desde_ejemplo = ejemplos[1]
+
+                    with col_3:
+                        if st.button(
+                            ejemplos[2],
+                            key="ejemplo_3_amigo_imaginario",
+                            width="stretch"
+                        ):
+                            update_friend_companion_state("cuento")
+                            mensaje_desde_ejemplo = ejemplos[2]
+
+                render_chat_history_with_feedback(
+                    user_id=user_id,
+                    modulo_actual=modulo_actual
+                )
+
+                mensaje_chat = st.chat_input(info_modulo["placeholder"])
+                mensaje_usuario = None
+
+                if mensaje_desde_iniciativa:
+                    mensaje_usuario = mensaje_desde_iniciativa
+                elif mensaje_desde_ejemplo:
+                    mensaje_usuario = mensaje_desde_ejemplo
+                elif mensaje_chat:
+                    update_friend_companion_state("feliz")
+                    mensaje_usuario = mensaje_chat
+
+                if mensaje_usuario:
+                    procesar_mensaje_chat(
+                        user_id=user_id,
+                        modulo_actual=modulo_actual,
+                        mensaje_usuario=mensaje_usuario
+                    )
+
+            with col_companion:
+                render_friend_companion_panel()
 
         # ----------------------------------------------------
         # Tab Mi amigo
@@ -1805,6 +2699,10 @@ if errores_config:
     st.info("Revisa tu archivo .env y vuelve a ejecutar la aplicación.")
     st.stop()
 
+# ------------------------------------------------------------
+# Sincronizar login OIDC de Google con la sesión local
+# ------------------------------------------------------------
+sync_google_login_to_local_user()
 
 # ------------------------------------------------------------
 # Router principal

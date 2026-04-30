@@ -1,11 +1,18 @@
 # ============================================================
 # Dependencias del proyecto
 # - streamlit: interfaz web
+# - Authlib: soporte OIDC / login con Google
 # - google-genai: SDK oficial de Gemini
 # - python-dotenv: carga variables desde .env
+# - pypdf: lectura de PDF
 # ============================================================
 
 streamlit>=1.42.0
+Authlib>=1.3.2
 google-genai
 python-dotenv
 pypdf
+fastapi
+uvicorn
+PyJWT
+python-multipart
