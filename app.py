@@ -71,6 +71,7 @@ from database.chat_db import (
     create_article,
     create_conversation,
     create_google_user,
+    delete_article,
     get_article_by_id,
     get_conversation_by_id,
     get_feedback_for_message,
@@ -96,7 +97,6 @@ from database.chat_db import (
     update_friend_profile,
     update_imaginary_friend_profile,
     update_title_if_default,
-    delete_article,
 )
 
 # ------------------------------------------------------------
@@ -557,9 +557,6 @@ def sync_current_user_session(usuario: dict) -> None:
     """
     Guarda una representación simple del usuario autenticado
     para reutilizarla en la sesión compartida web / móvil.
-
-    Parámetros:
-        usuario (dict): usuario autenticado
     """
     st.session_state.current_user = {
         "id": usuario["id"],
@@ -577,13 +574,19 @@ def sync_current_user_session(usuario: dict) -> None:
 # ------------------------------------------------------------
 # Iniciar sesión
 # ------------------------------------------------------------
-def iniciar_sesion(usuario: dict, auth_token: str | None = None) -> None:
+def iniciar_sesion(
+    usuario: dict,
+    auth_token: str | None = None,
+    reset_chat_state: bool = True
+) -> None:
     """
     Guarda al usuario autenticado en session_state.
 
     Parámetros:
         usuario (dict): usuario autenticado
         auth_token (str | None): token JWT opcional de FastAPI
+        reset_chat_state (bool): si True reinicia módulo/chat actual.
+                                 Si False conserva el estado actual.
     """
     st.session_state.user_id = usuario["id"]
     st.session_state.username = usuario["username"]
@@ -608,14 +611,22 @@ def iniciar_sesion(usuario: dict, auth_token: str | None = None) -> None:
     # --------------------------------------------------------
     st.session_state.friend_avatar = get_imaginary_friend_profile(usuario["id"])
 
+    # --------------------------------------------------------
+    # Estado visual del acompañante
+    # --------------------------------------------------------
     st.session_state.friend_companion_state = "calma"
     st.session_state.friend_companion_message = "Estoy aquí contigo."
 
-    st.session_state.modulo_actual = "amigo_imaginario"
-    st.session_state.ultimo_modulo = "amigo_imaginario"
-    st.session_state.conversation_id = None
-    st.session_state.mensajes = []
-    st.session_state.pending_message = None
+    # --------------------------------------------------------
+    # Solo reiniciar módulo/chat cuando sea login real.
+    # No hacerlo cuando solo se restaura sesión.
+    # --------------------------------------------------------
+    if reset_chat_state:
+        st.session_state.modulo_actual = "amigo_imaginario"
+        st.session_state.ultimo_modulo = "amigo_imaginario"
+        st.session_state.conversation_id = None
+        st.session_state.mensajes = []
+        st.session_state.pending_message = None
 
 
 # ------------------------------------------------------------
@@ -660,15 +671,38 @@ def restore_api_session() -> None:
     Si existe un token JWT guardado en session_state,
     intenta recuperar al usuario actual desde FastAPI
     para mantener sincronizada la sesión web con la móvil.
+
+    Importante:
+        Esta restauración NO debe reiniciar el módulo actual
+        ni la conversación activa en cada rerun de Streamlit.
     """
     token = st.session_state.get("auth_token")
 
     if not token:
         return
 
+    # --------------------------------------------------------
+    # Si ya existe sesión local cargada, no volver a pedir
+    # /api/auth/me en cada rerun para no resetear la UI.
+    # --------------------------------------------------------
+    if (
+        st.session_state.get("user_id") is not None
+        and st.session_state.get("current_user") is not None
+    ):
+        return
+
     try:
         usuario = get_current_web_user(token)
-        iniciar_sesion(usuario, auth_token=token)
+
+        # ----------------------------------------------------
+        # Restaurar usuario SIN reiniciar módulo/chat actual.
+        # ----------------------------------------------------
+        iniciar_sesion(
+            usuario=usuario,
+            auth_token=token,
+            reset_chat_state=False
+        )
+
     except Exception:
         st.session_state.auth_token = None
         st.session_state.current_user = None
@@ -1493,9 +1527,6 @@ def render_biblioteca_panel(user_id: int) -> None:
     Renderiza el panel de búsqueda y lectura de artículos.
     Usa API compartida si existe token; si no, usa fallback local.
     """
-    # --------------------------------------------------------
-    # Modo compartido vía API
-    # --------------------------------------------------------
     if has_shared_api_session():
         token = st.session_state.get("auth_token")
 
@@ -2323,7 +2354,11 @@ def sync_google_login_to_local_user() -> None:
             display_name=name
         )
 
-    iniciar_sesion(usuario, auth_token=None)
+    iniciar_sesion(
+        usuario=usuario,
+        auth_token=None,
+        reset_chat_state=True
+    )
 
 
 # ------------------------------------------------------------
@@ -2425,7 +2460,8 @@ def render_auth_screen() -> None:
                             auth = login_web_user(username, password)
                             iniciar_sesion(
                                 usuario=auth["user"],
-                                auth_token=auth["access_token"]
+                                auth_token=auth["access_token"],
+                                reset_chat_state=True
                             )
                             st.success("Sesión iniciada correctamente.")
                             st.rerun()
@@ -2470,7 +2506,8 @@ def render_auth_screen() -> None:
                             auth = register_web_user(display_name, username, password)
                             iniciar_sesion(
                                 usuario=auth["user"],
-                                auth_token=auth["access_token"]
+                                auth_token=auth["access_token"],
+                                reset_chat_state=True
                             )
                             st.success("Cuenta creada correctamente.")
                             st.rerun()
@@ -2488,9 +2525,6 @@ def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str
     Procesa un mensaje del usuario.
     Usa API compartida si existe token; si no, usa fallback local.
     """
-    # --------------------------------------------------------
-    # Modo compartido vía API
-    # --------------------------------------------------------
     if has_shared_api_session():
         token = st.session_state.get("auth_token")
 
