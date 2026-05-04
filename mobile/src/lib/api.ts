@@ -35,6 +35,17 @@ export type AppUser = {
   preferred_comfort: string;
 };
 
+export type ImaginaryFriendAvatar = {
+  face_shape: string;
+  primary_color: string;
+  hair_style: string;
+  hair_color: string;
+  eye_style: string;
+  mouth_style: string;
+  accessory: string;
+  background_style: string;
+};
+
 export type AuthResponse = {
   access_token: string;
   token_type: string;
@@ -80,6 +91,28 @@ export type UpdateFriendPreferencesPayload = {
   preferred_comfort: string;
 };
 
+export type UpdateAvatarPayload = {
+  face_shape: string;
+  primary_color: string;
+  hair_style: string;
+  hair_color: string;
+  eye_style: string;
+  mouth_style: string;
+  accessory: string;
+  background_style: string;
+};
+
+export type FavoriteStateResponse = {
+  article_id: number;
+  is_favorite: boolean;
+};
+
+export type SendArticleToChatResponse = {
+  conversation_id: number;
+  module: string;
+  title: string;
+};
+
 // ------------------------------------------------------------
 // Construir headers para peticiones
 // ------------------------------------------------------------
@@ -105,10 +138,8 @@ async function fetchWithTimeout(
   options: RequestInit,
   timeoutMs: number = 12000
 ): Promise<Response> {
-  // Crear controlador para cancelar la petición
   const controller = new AbortController();
 
-  // Programar timeout
   const timeoutId = setTimeout(() => {
     controller.abort();
   }, timeoutMs);
@@ -169,14 +200,12 @@ async function apiRequest<T>(
 
     return data as T;
   } catch (error: any) {
-    // Error por timeout
     if (error?.name === "AbortError") {
       throw new Error(
         "La petición tardó demasiado. Revisa que el backend esté encendido y que la IP sea correcta."
       );
     }
 
-    // Error de red típico en React Native
     if (
       String(error?.message || "").includes("Network request failed") ||
       String(error?.message || "").includes("fetch")
@@ -194,9 +223,6 @@ async function apiRequest<T>(
 // AUTENTICACIÓN
 // ============================================================
 
-// ------------------------------------------------------------
-// Iniciar sesión
-// ------------------------------------------------------------
 export async function loginRequest(
   username: string,
   password: string
@@ -210,9 +236,6 @@ export async function loginRequest(
   });
 }
 
-// ------------------------------------------------------------
-// Registrar usuario
-// ------------------------------------------------------------
 export async function registerRequest(
   displayName: string,
   username: string,
@@ -228,9 +251,6 @@ export async function registerRequest(
   });
 }
 
-// ------------------------------------------------------------
-// Obtener usuario autenticado actual
-// ------------------------------------------------------------
 export async function getCurrentUser(token: string): Promise<AppUser> {
   return apiRequest<AppUser>(
     "/api/auth/me",
@@ -241,9 +261,6 @@ export async function getCurrentUser(token: string): Promise<AppUser> {
   );
 }
 
-// ------------------------------------------------------------
-// Actualizar preferencias del amigo imaginario
-// ------------------------------------------------------------
 export async function updateFriendPreferencesRequest(
   token: string,
   payload: UpdateFriendPreferencesPayload
@@ -265,12 +282,48 @@ export async function updateFriendPreferencesRequest(
 }
 
 // ============================================================
+// AVATAR DEL AMIGO IMAGINARIO
+// ============================================================
+
+export async function getAvatarProfileRequest(
+  token: string
+): Promise<ImaginaryFriendAvatar> {
+  return apiRequest<ImaginaryFriendAvatar>(
+    "/api/auth/me/avatar",
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function updateAvatarProfileRequest(
+  token: string,
+  payload: UpdateAvatarPayload
+): Promise<ImaginaryFriendAvatar> {
+  return apiRequest<ImaginaryFriendAvatar>(
+    "/api/auth/me/avatar",
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        face_shape: payload.face_shape.trim(),
+        primary_color: payload.primary_color.trim(),
+        hair_style: payload.hair_style.trim(),
+        hair_color: payload.hair_color.trim(),
+        eye_style: payload.eye_style.trim(),
+        mouth_style: payload.mouth_style.trim(),
+        accessory: payload.accessory.trim(),
+        background_style: payload.background_style.trim(),
+      }),
+    },
+    token
+  );
+}
+
+// ============================================================
 // CONVERSACIONES
 // ============================================================
 
-// ------------------------------------------------------------
-// Listar conversaciones por módulo
-// ------------------------------------------------------------
 export async function listConversations(
   module: string,
   token: string
@@ -284,9 +337,6 @@ export async function listConversations(
   );
 }
 
-// ------------------------------------------------------------
-// Crear conversación nueva para un módulo
-// ------------------------------------------------------------
 export async function createConversationRequest(
   module: string,
   token: string
@@ -300,9 +350,6 @@ export async function createConversationRequest(
   );
 }
 
-// ------------------------------------------------------------
-// Obtener mensajes de una conversación
-// ------------------------------------------------------------
 export async function getConversationMessages(
   conversationId: number,
   token: string
@@ -316,9 +363,6 @@ export async function getConversationMessages(
   );
 }
 
-// ------------------------------------------------------------
-// Enviar mensaje a una conversación
-// ------------------------------------------------------------
 export async function sendMessageRequest(
   conversationId: number,
   content: string,
@@ -338,17 +382,16 @@ export async function sendMessageRequest(
 // BIBLIOTECA
 // ============================================================
 
-// ------------------------------------------------------------
-// Listar artículos de biblioteca
-// ------------------------------------------------------------
 export async function listArticles(
   token: string,
-  search: string = ""
+  search: string = "",
+  category: string = "Todas",
+  readerType: string = "Todos"
 ): Promise<Article[]> {
   const query = new URLSearchParams({
     search,
-    category: "Todas",
-    reader_type: "Todos",
+    category,
+    reader_type: readerType,
   });
 
   return apiRequest<Article[]>(
@@ -360,9 +403,6 @@ export async function listArticles(
   );
 }
 
-// ------------------------------------------------------------
-// Obtener detalle de artículo
-// ------------------------------------------------------------
 export async function getArticleById(
   token: string,
   articleId: number
@@ -371,6 +411,57 @@ export async function getArticleById(
     `/api/library/articles/${articleId}`,
     {
       method: "GET",
+    },
+    token
+  );
+}
+
+export async function listFavoriteArticles(
+  token: string
+): Promise<Article[]> {
+  return apiRequest<Article[]>(
+    "/api/library/favorites",
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function addFavoriteArticleRequest(
+  token: string,
+  articleId: number
+): Promise<FavoriteStateResponse> {
+  return apiRequest<FavoriteStateResponse>(
+    `/api/library/favorites/${articleId}`,
+    {
+      method: "POST",
+    },
+    token
+  );
+}
+
+export async function removeFavoriteArticleRequest(
+  token: string,
+  articleId: number
+): Promise<FavoriteStateResponse> {
+  return apiRequest<FavoriteStateResponse>(
+    `/api/library/favorites/${articleId}`,
+    {
+      method: "DELETE",
+    },
+    token
+  );
+}
+
+export async function sendArticleToChatRequest(
+  token: string,
+  articleId: number
+): Promise<SendArticleToChatResponse> {
+  return apiRequest<SendArticleToChatResponse>(
+    `/api/library/articles/${articleId}/send-to-chat`,
+    {
+      method: "POST",
     },
     token
   );

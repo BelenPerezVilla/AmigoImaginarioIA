@@ -2,7 +2,8 @@
 # app.py
 # Aplicación principal Streamlit del proyecto.
 # Incluye:
-# - autenticación con SQLite
+# - autenticación web compartida vía FastAPI
+# - soporte de acceso con Google OIDC
 # - historial por usuario
 # - biblioteca estructurada
 # - panel admin
@@ -35,17 +36,41 @@ import streamlit as st
 from config import validar_configuracion
 
 # ------------------------------------------------------------
+# Cliente de autenticación compartida web / móvil
+# ------------------------------------------------------------
+from services.web_auth import (
+    login_web_user,
+    register_web_user,
+    get_current_web_user,
+)
+
+# ------------------------------------------------------------
+# Servicios web para biblioteca compartida
+# ------------------------------------------------------------
+from services.web_library import (
+    get_library_article,
+    get_library_filter_options,
+    list_library_articles,
+)
+
+# ------------------------------------------------------------
+# Servicios web para conversaciones compartidas
+# ------------------------------------------------------------
+from services.web_chats import (
+    create_web_conversation,
+    get_web_conversation_messages,
+    list_web_conversations_by_module,
+    send_web_chat_message,
+)
+
+# ------------------------------------------------------------
 # Funciones de base de datos
 # ------------------------------------------------------------
 from database.chat_db import (
     add_message,
-    authenticate_user,
     create_article,
     create_conversation,
-    create_user,
     create_google_user,
-    get_user_by_google_sub,
-    delete_article,
     get_article_by_id,
     get_conversation_by_id,
     get_feedback_for_message,
@@ -53,6 +78,7 @@ from database.chat_db import (
     get_imaginary_friend_profile,
     get_latest_conversation_by_module,
     get_messages_by_conversation,
+    get_user_by_google_sub,
     import_articles,
     initialize_database,
     list_all_articles,
@@ -70,6 +96,7 @@ from database.chat_db import (
     update_friend_profile,
     update_imaginary_friend_profile,
     update_title_if_default,
+    delete_article,
 )
 
 # ------------------------------------------------------------
@@ -103,7 +130,6 @@ from utils.avatar_svg import (
     DEFAULT_FRIEND_AVATAR,
     build_friend_avatar_svg,
 )
-
 
 # ------------------------------------------------------------
 # Configuración general de la página
@@ -156,6 +182,9 @@ def inicializar_estado() -> None:
     """
     Inicializa variables necesarias en session_state.
     """
+    # --------------------------------------------------------
+    # Sesión local clásica de la app
+    # --------------------------------------------------------
     if "user_id" not in st.session_state:
         st.session_state.user_id = None
 
@@ -168,6 +197,18 @@ def inicializar_estado() -> None:
     if "is_admin" not in st.session_state:
         st.session_state.is_admin = False
 
+    # --------------------------------------------------------
+    # Sesión compartida basada en FastAPI
+    # --------------------------------------------------------
+    if "auth_token" not in st.session_state:
+        st.session_state.auth_token = None
+
+    if "current_user" not in st.session_state:
+        st.session_state.current_user = None
+
+    # --------------------------------------------------------
+    # Estado general de la app
+    # --------------------------------------------------------
     if "modulo_actual" not in st.session_state:
         st.session_state.modulo_actual = "amigo_imaginario"
 
@@ -218,7 +259,7 @@ def inicializar_estado() -> None:
             "favorite_color": "",
             "favorite_activity": "",
             "encouragement_style": "",
-            "preferred_comfort": "cuentos"
+            "preferred_comfort": "cuentos",
         }
 
     if "friend_avatar" not in st.session_state:
@@ -500,11 +541,49 @@ def obtener_bienvenida_modulo(modulo: str) -> str:
 
 
 # ------------------------------------------------------------
+# Verificar si la sesión actual usa FastAPI compartido
+# ------------------------------------------------------------
+def has_shared_api_session() -> bool:
+    """
+    Indica si la sesión actual tiene token API.
+    """
+    return bool(st.session_state.get("auth_token"))
+
+
+# ------------------------------------------------------------
+# Sincronizar usuario actual a current_user
+# ------------------------------------------------------------
+def sync_current_user_session(usuario: dict) -> None:
+    """
+    Guarda una representación simple del usuario autenticado
+    para reutilizarla en la sesión compartida web / móvil.
+
+    Parámetros:
+        usuario (dict): usuario autenticado
+    """
+    st.session_state.current_user = {
+        "id": usuario["id"],
+        "username": usuario["username"],
+        "display_name": usuario["display_name"],
+        "is_admin": bool(usuario.get("is_admin", False)),
+        "friend_name": usuario.get("friend_name", "Lumi"),
+        "favorite_color": usuario.get("favorite_color", ""),
+        "favorite_activity": usuario.get("favorite_activity", ""),
+        "encouragement_style": usuario.get("encouragement_style", ""),
+        "preferred_comfort": usuario.get("preferred_comfort", "cuentos"),
+    }
+
+
+# ------------------------------------------------------------
 # Iniciar sesión
 # ------------------------------------------------------------
-def iniciar_sesion(usuario: dict) -> None:
+def iniciar_sesion(usuario: dict, auth_token: str | None = None) -> None:
     """
     Guarda al usuario autenticado en session_state.
+
+    Parámetros:
+        usuario (dict): usuario autenticado
+        auth_token (str | None): token JWT opcional de FastAPI
     """
     st.session_state.user_id = usuario["id"]
     st.session_state.username = usuario["username"]
@@ -517,6 +596,12 @@ def iniciar_sesion(usuario: dict) -> None:
         "encouragement_style": usuario.get("encouragement_style", ""),
         "preferred_comfort": usuario.get("preferred_comfort", "cuentos"),
     }
+
+    # --------------------------------------------------------
+    # Guardar token si viene de autenticación FastAPI
+    # --------------------------------------------------------
+    st.session_state.auth_token = auth_token
+    sync_current_user_session(usuario)
 
     # --------------------------------------------------------
     # Cargar avatar guardado del amigo imaginario
@@ -544,12 +629,16 @@ def cerrar_sesion() -> None:
     st.session_state.username = None
     st.session_state.display_name = None
     st.session_state.is_admin = False
+
+    st.session_state.auth_token = None
+    st.session_state.current_user = None
+
     st.session_state.friend_name = "Lumi"
     st.session_state.friend_profile = {
         "favorite_color": "",
         "favorite_activity": "",
         "encouragement_style": "",
-        "preferred_comfort": "cuentos"
+        "preferred_comfort": "cuentos",
     }
     st.session_state.friend_avatar = dict(DEFAULT_FRIEND_AVATAR)
     st.session_state.friend_companion_state = "calma"
@@ -564,13 +653,64 @@ def cerrar_sesion() -> None:
 
 
 # ------------------------------------------------------------
+# Restaurar sesión desde token FastAPI
+# ------------------------------------------------------------
+def restore_api_session() -> None:
+    """
+    Si existe un token JWT guardado en session_state,
+    intenta recuperar al usuario actual desde FastAPI
+    para mantener sincronizada la sesión web con la móvil.
+    """
+    token = st.session_state.get("auth_token")
+
+    if not token:
+        return
+
+    try:
+        usuario = get_current_web_user(token)
+        iniciar_sesion(usuario, auth_token=token)
+    except Exception:
+        st.session_state.auth_token = None
+        st.session_state.current_user = None
+
+        if not getattr(st.user, "is_logged_in", False):
+            cerrar_sesion()
+
+
+# ------------------------------------------------------------
 # Cargar conversación
 # ------------------------------------------------------------
 def cargar_conversacion(conversation_id: int, user_id: int) -> None:
     """
-    Carga una conversación del usuario a session_state.
-    También conserva los ids de mensaje para el feedback.
+    Carga una conversación usando API compartida si existe token;
+    si no, usa fallback local para sesiones Google OIDC.
     """
+    if has_shared_api_session():
+        token = st.session_state.get("auth_token")
+
+        try:
+            mensajes = get_web_conversation_messages(
+                token=token,
+                conversation_id=conversation_id
+            )
+
+            st.session_state.conversation_id = conversation_id
+            st.session_state.mensajes = [
+                {
+                    "id": mensaje.get("id"),
+                    "role": mensaje.get("role", "assistant"),
+                    "content": mensaje.get("content", "")
+                }
+                for mensaje in mensajes
+            ]
+        except Exception as error:
+            st.error(f"No se pudo cargar la conversación: {error}")
+
+        return
+
+    # --------------------------------------------------------
+    # Fallback local
+    # --------------------------------------------------------
     conversacion = get_conversation_by_id(conversation_id, user_id)
 
     if not conversacion:
@@ -596,8 +736,30 @@ def cargar_conversacion(conversation_id: int, user_id: int) -> None:
 # ------------------------------------------------------------
 def crear_y_cargar_nueva_conversacion(modulo: str, user_id: int) -> None:
     """
-    Crea una conversación nueva y guarda la bienvenida del módulo.
+    Crea una conversación usando API compartida si existe token;
+    si no, usa fallback local.
     """
+    if has_shared_api_session():
+        token = st.session_state.get("auth_token")
+
+        try:
+            conversacion = create_web_conversation(
+                token=token,
+                module=modulo
+            )
+
+            st.session_state.conversation_id = conversacion["id"]
+            st.session_state.modulo_actual = modulo
+            st.session_state.ultimo_modulo = modulo
+            cargar_conversacion(conversacion["id"], user_id)
+        except Exception as error:
+            st.error(f"No se pudo crear la conversación: {error}")
+
+        return
+
+    # --------------------------------------------------------
+    # Fallback local
+    # --------------------------------------------------------
     conversation_id = create_conversation(
         user_id=user_id,
         module=modulo
@@ -628,10 +790,39 @@ def crear_y_cargar_nueva_conversacion(modulo: str, user_id: int) -> None:
 # ------------------------------------------------------------
 def asegurar_conversacion_activa(modulo: str, user_id: int) -> None:
     """
-    Garantiza que exista una conversación activa para el usuario.
+    Garantiza que exista una conversación activa para el módulo.
+    Usa API si hay token; si no, usa fallback local.
     """
     conversation_id = st.session_state.get("conversation_id")
 
+    # --------------------------------------------------------
+    # Si ya hay una conversación con mensajes cargados,
+    # la dejamos activa.
+    # --------------------------------------------------------
+    if conversation_id and st.session_state.mensajes:
+        return
+
+    if has_shared_api_session():
+        token = st.session_state.get("auth_token")
+
+        try:
+            conversaciones = list_web_conversations_by_module(
+                token=token,
+                module=modulo
+            )
+
+            if conversaciones:
+                cargar_conversacion(conversaciones[0]["id"], user_id)
+            else:
+                crear_y_cargar_nueva_conversacion(modulo, user_id)
+        except Exception as error:
+            st.error(f"No se pudo asegurar la conversación activa: {error}")
+
+        return
+
+    # --------------------------------------------------------
+    # Fallback local
+    # --------------------------------------------------------
     if conversation_id:
         conversacion = get_conversation_by_id(conversation_id, user_id)
 
@@ -646,6 +837,33 @@ def asegurar_conversacion_activa(modulo: str, user_id: int) -> None:
         cargar_conversacion(ultima["id"], user_id)
     else:
         crear_y_cargar_nueva_conversacion(modulo, user_id)
+
+
+# ------------------------------------------------------------
+# Obtener conversaciones del módulo
+# ------------------------------------------------------------
+def obtener_conversaciones_modulo(modulo: str, user_id: int) -> list[dict]:
+    """
+    Recupera conversaciones del módulo actual.
+    Usa API si hay token; si no, usa fallback local.
+    """
+    if has_shared_api_session():
+        token = st.session_state.get("auth_token")
+
+        try:
+            return list_web_conversations_by_module(
+                token=token,
+                module=modulo
+            )
+        except Exception as error:
+            st.error(f"No se pudieron cargar las conversaciones del módulo: {error}")
+            return []
+
+    return list_conversations_by_module(
+        user_id=user_id,
+        module=modulo,
+        limit=30
+    )
 
 
 # ------------------------------------------------------------
@@ -899,9 +1117,6 @@ def render_feedback_metrics_panel() -> None:
 def update_friend_companion_state(trigger: str = "") -> None:
     """
     Ajusta el estado visual del acompañante según el disparador.
-
-    Parámetros:
-        trigger (str): pista del contexto actual
     """
     trigger_clean = str(trigger or "").strip().lower()
 
@@ -1054,6 +1269,12 @@ def render_friend_memory_panel(user_id: int) -> None:
                     "preferred_comfort": preferred_comfort.strip(),
                 }
 
+                if st.session_state.current_user:
+                    st.session_state.current_user["favorite_color"] = favorite_color.strip()
+                    st.session_state.current_user["favorite_activity"] = favorite_activity.strip()
+                    st.session_state.current_user["encouragement_style"] = encouragement_style.strip()
+                    st.session_state.current_user["preferred_comfort"] = preferred_comfort.strip()
+
                 st.success("Memoria suave guardada correctamente.")
                 st.rerun()
 
@@ -1068,9 +1289,6 @@ def render_friend_initiatives_panel() -> str | None:
     """
     Muestra botones rápidos para que el Amigo Imaginario
     inicie dinámicas suaves y personalizadas.
-
-    Retorna:
-        str | None: mensaje a enviar si se presionó un botón.
     """
     iniciativas = build_friend_initiatives(
         friend_name=st.session_state.friend_name,
@@ -1257,6 +1475,9 @@ def render_friend_creation_panel(user_id: int) -> None:
                         "background_style": background_style,
                     }
 
+                    if st.session_state.current_user:
+                        st.session_state.current_user["friend_name"] = friend_name_input.strip()
+
                     st.success("Tu amigo imaginario fue guardado correctamente.")
                     st.rerun()
 
@@ -1267,10 +1488,178 @@ def render_friend_creation_panel(user_id: int) -> None:
 # ------------------------------------------------------------
 # Panel de biblioteca estructurada
 # ------------------------------------------------------------
-def render_biblioteca_panel() -> None:
+def render_biblioteca_panel(user_id: int) -> None:
     """
     Renderiza el panel de búsqueda y lectura de artículos.
+    Usa API compartida si existe token; si no, usa fallback local.
     """
+    # --------------------------------------------------------
+    # Modo compartido vía API
+    # --------------------------------------------------------
+    if has_shared_api_session():
+        token = st.session_state.get("auth_token")
+
+        try:
+            categorias_api, tipos_lector_api = get_library_filter_options(token)
+
+            categorias = ["Todas"] + categorias_api
+            tipos_lector = ["Todos"] + tipos_lector_api
+
+            if st.session_state.article_category_filter not in categorias:
+                st.session_state.article_category_filter = "Todas"
+
+            if st.session_state.article_reader_filter not in tipos_lector:
+                st.session_state.article_reader_filter = "Todos"
+
+            st.markdown(
+                """
+                <div class="info-card">
+                    <div class="info-title">Biblioteca estructurada</div>
+                    <div class="info-text">
+                        Busca artículos por tema o tipo de lector. También puedes usar cualquier artículo como base
+                        para conversar con el asistente educativo.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            col_f1, col_f2, col_f3 = st.columns([2, 1, 1], gap="medium")
+
+            with col_f1:
+                st.text_input(
+                    "Buscar artículo",
+                    key="article_search_text",
+                    placeholder="Ejemplo: dislexia, ansiedad, crisis, aula..."
+                )
+
+            with col_f2:
+                st.selectbox(
+                    "Categoría",
+                    options=categorias,
+                    key="article_category_filter"
+                )
+
+            with col_f3:
+                st.selectbox(
+                    "Tipo de lector",
+                    options=tipos_lector,
+                    key="article_reader_filter"
+                )
+
+            resultados = list_library_articles(
+                token=token,
+                search_text=st.session_state.article_search_text,
+                category=st.session_state.article_category_filter,
+                reader_type=st.session_state.article_reader_filter,
+            )
+
+            ids_resultados = [articulo["id"] for articulo in resultados]
+
+            if resultados:
+                if st.session_state.selected_article_id not in ids_resultados:
+                    st.session_state.selected_article_id = resultados[0]["id"]
+            else:
+                st.session_state.selected_article_id = None
+
+            col_lista, col_detalle = st.columns([1.05, 1.45], gap="large")
+
+            with col_lista:
+                st.caption(f"Resultados encontrados: {len(resultados)}")
+
+                if not resultados:
+                    st.warning("No encontré artículos con esos filtros.")
+                else:
+                    for articulo in resultados:
+                        st.markdown(
+                            f"""
+                            <div class="article-card">
+                                <div class="article-title">{articulo["title"]}</div>
+                                <div class="article-meta">{articulo["category"]} · {articulo["reader_type"]}</div>
+                                <div class="article-desc">{articulo["short_description"]}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+
+                        if st.button(
+                            "Abrir artículo",
+                            key=f"abrir_articulo_{articulo['id']}",
+                            width="stretch"
+                        ):
+                            st.session_state.selected_article_id = articulo["id"]
+                            st.rerun()
+
+            with col_detalle:
+                if not st.session_state.selected_article_id:
+                    st.info("Selecciona un artículo para leerlo aquí.")
+                    return
+
+                articulo = get_library_article(
+                    token=token,
+                    article_id=st.session_state.selected_article_id
+                )
+
+                if not articulo:
+                    st.warning("No pude cargar el artículo seleccionado.")
+                    return
+
+                st.markdown(f"## {articulo['title']}")
+                st.caption(f"{articulo['category']} · {articulo['reader_type']}")
+
+                st.markdown(
+                    f"""
+                    <div class="info-card">
+                        <div class="info-text">{articulo["short_description"]}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                st.markdown(articulo["content"])
+
+                col_a, col_b = st.columns(2)
+
+                with col_a:
+                    if st.button(
+                        "Llevar este artículo al chat educativo",
+                        key=f"usar_articulo_chat_{articulo['id']}",
+                        width="stretch"
+                    ):
+                        st.session_state.pending_message = (
+                            f"Quiero entender mejor este artículo.\n\n"
+                            f"Título: {articulo['title']}\n"
+                            f"Categoría: {articulo['category']}\n"
+                            f"Tipo de lector: {articulo['reader_type']}\n"
+                            f"Resumen: {articulo['short_description']}\n\n"
+                            f"Contenido del artículo:\n{articulo['content']}\n\n"
+                            "Explícamelo con lenguaje sencillo y dame 3 ideas prácticas."
+                        )
+                        st.rerun()
+
+                with col_b:
+                    if st.button(
+                        "Crear un chat nuevo sobre este tema",
+                        key=f"nuevo_chat_articulo_{articulo['id']}",
+                        width="stretch"
+                    ):
+                        st.session_state.pending_message = (
+                            f"Quiero hablar sobre este tema: {articulo['title']}. "
+                            "Ayúdame a entenderlo mejor con palabras sencillas."
+                        )
+                        st.session_state.conversation_id = None
+                        st.session_state.mensajes = []
+                        st.rerun()
+
+            return
+
+        except Exception as error:
+            st.error(f"No se pudo cargar la biblioteca compartida: {error}")
+            return
+
+    # --------------------------------------------------------
+    # Fallback local
+    # --------------------------------------------------------
     categorias = ["Todas"] + list_article_categories()
     tipos_lector = ["Todos"] + list_reader_types()
 
@@ -1865,6 +2254,9 @@ def render_admin_panel() -> None:
                     if usuario["id"] == st.session_state.user_id:
                         st.session_state.is_admin = nuevo_estado
 
+                    if st.session_state.current_user and usuario["id"] == st.session_state.current_user.get("id"):
+                        st.session_state.current_user["is_admin"] = nuevo_estado
+
                     st.rerun()
 
 
@@ -1874,9 +2266,6 @@ def render_admin_panel() -> None:
 def get_google_oidc_identity() -> dict:
     """
     Extrae datos del usuario autenticado por OIDC en Streamlit.
-
-    Retorna:
-        dict: sub, email y name
     """
     if not getattr(st.user, "is_logged_in", False):
         return {
@@ -1885,9 +2274,6 @@ def get_google_oidc_identity() -> dict:
             "name": ""
         }
 
-    # --------------------------------------------------------
-    # Streamlit expone estos atributos después de st.login()
-    # --------------------------------------------------------
     google_sub = str(getattr(st.user, "sub", "") or "").strip()
     email = str(getattr(st.user, "email", "") or "").strip().lower()
     name = str(getattr(st.user, "name", "") or "").strip()
@@ -1907,13 +2293,14 @@ def sync_google_login_to_local_user() -> None:
     Si el usuario ya inició sesión con Google mediante OIDC,
     lo busca en SQLite o lo crea automáticamente y luego
     inicia sesión local en la app.
+
+    Nota:
+        Esta ruta funciona como fallback local. La sesión Google
+        aún no genera token JWT compartido para FastAPI.
     """
     if not getattr(st.user, "is_logged_in", False):
         return
 
-    # --------------------------------------------------------
-    # Si ya existe sesión local activa, no hacer nada
-    # --------------------------------------------------------
     if st.session_state.user_id is not None:
         return
 
@@ -1936,7 +2323,7 @@ def sync_google_login_to_local_user() -> None:
             display_name=name
         )
 
-    iniciar_sesion(usuario)
+    iniciar_sesion(usuario, auth_token=None)
 
 
 # ------------------------------------------------------------
@@ -1952,18 +2339,20 @@ def logout_everything() -> None:
     if getattr(st.user, "is_logged_in", False):
         st.logout()
 
+
 # ------------------------------------------------------------
 # Pantalla de autenticación
 # ------------------------------------------------------------
 def render_auth_screen() -> None:
     """
-    Muestra login local, registro local y acceso con Google.
+    Muestra login compartido vía FastAPI, registro compartido
+    y acceso con Google OIDC.
     """
     st.markdown('<div class="auth-shell">', unsafe_allow_html=True)
 
     st.markdown('<div class="main-title">Amigo Imaginario Neurodivergente</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="main-subtitle">Fase 16 · Registro e inicio de sesión con Google</div>',
+        '<div class="main-subtitle">Fase 17 · Login compartido web / móvil + fallback Google</div>',
         unsafe_allow_html=True
     )
 
@@ -1972,7 +2361,7 @@ def render_auth_screen() -> None:
         <div class="hero-card">
             <div class="hero-title">Entra como quieras</div>
             <div class="hero-text">
-                Puedes usar tu cuenta local o entrar con Google.
+                Puedes usar tu cuenta compartida entre web y móvil o entrar con Google.
                 Si es tu primera vez con Google, tu cuenta local se creará automáticamente.
             </div>
         </div>
@@ -1991,7 +2380,8 @@ def render_auth_screen() -> None:
                     • Conversar con un acompañante empático<br>
                     • Crear y personalizar tu amigo imaginario<br>
                     • Guardar historial por usuario<br>
-                    • Entrar con cuenta local o con Google
+                    • Entrar con cuenta compartida web / móvil<br>
+                    • Entrar con Google
                 </div>
             </div>
             """,
@@ -1999,7 +2389,7 @@ def render_auth_screen() -> None:
         )
 
         st.markdown("### Acceso con Google")
-        st.caption("Se abrirá el flujo de Google y, al volver, la app te iniciará sesión automáticamente.")
+        st.caption("Google entra en modo local de respaldo mientras terminamos la sincronización completa con API.")
 
         st.button(
             "Continuar con Google",
@@ -2026,13 +2416,21 @@ def render_auth_screen() -> None:
                 submit_login = st.form_submit_button("Entrar", width="stretch")
 
                 if submit_login:
-                    usuario = authenticate_user(username, password)
-
-                    if not usuario:
-                        st.error("Usuario o contraseña incorrectos.")
-                    else:
-                        iniciar_sesion(usuario)
-                        st.rerun()
+                    try:
+                        if not username.strip():
+                            st.error("Escribe tu usuario.")
+                        elif not password:
+                            st.error("Escribe tu contraseña.")
+                        else:
+                            auth = login_web_user(username, password)
+                            iniciar_sesion(
+                                usuario=auth["user"],
+                                auth_token=auth["access_token"]
+                            )
+                            st.success("Sesión iniciada correctamente.")
+                            st.rerun()
+                    except Exception as error:
+                        st.error(str(error))
 
         with tab_register:
             with st.form("register_form"):
@@ -2061,19 +2459,23 @@ def render_auth_screen() -> None:
                 submit_register = st.form_submit_button("Crear cuenta", width="stretch")
 
                 if submit_register:
-                    if password != confirm_password:
-                        st.error("Las contraseñas no coinciden.")
-                    else:
-                        try:
-                            usuario = create_user(
-                                username=username,
-                                password=password,
-                                display_name=display_name
+                    try:
+                        if password != confirm_password:
+                            st.error("Las contraseñas no coinciden.")
+                        elif len(username.strip()) < 3:
+                            st.error("El nombre de usuario debe tener al menos 3 caracteres.")
+                        elif len(password) < 8:
+                            st.error("La contraseña debe tener al menos 8 caracteres.")
+                        else:
+                            auth = register_web_user(display_name, username, password)
+                            iniciar_sesion(
+                                usuario=auth["user"],
+                                auth_token=auth["access_token"]
                             )
-                            iniciar_sesion(usuario)
+                            st.success("Cuenta creada correctamente.")
                             st.rerun()
-                        except ValueError as error:
-                            st.error(str(error))
+                    except Exception as error:
+                        st.error(str(error))
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -2083,16 +2485,75 @@ def render_auth_screen() -> None:
 # ------------------------------------------------------------
 def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str) -> None:
     """
-    Procesa un mensaje del usuario, lo guarda y genera respuesta.
+    Procesa un mensaje del usuario.
+    Usa API compartida si existe token; si no, usa fallback local.
     """
+    # --------------------------------------------------------
+    # Modo compartido vía API
+    # --------------------------------------------------------
+    if has_shared_api_session():
+        token = st.session_state.get("auth_token")
+
+        if not st.session_state.conversation_id:
+            crear_y_cargar_nueva_conversacion(modulo_actual, user_id)
+
+        conversation_id = st.session_state.conversation_id
+
+        if not conversation_id:
+            st.error("No se pudo obtener una conversación activa.")
+            return
+
+        with st.chat_message("user"):
+            st.markdown(mensaje_usuario)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Pensando..."):
+                try:
+                    result = send_web_chat_message(
+                        token=token,
+                        conversation_id=conversation_id,
+                        content=mensaje_usuario
+                    )
+
+                    user_message = result.get("user_message", {})
+                    assistant_message = result.get("assistant_message", {})
+
+                    if not assistant_message.get("content", "").strip():
+                        assistant_message["content"] = (
+                            "No pude generar una respuesta en este momento. "
+                            "Intenta nuevamente."
+                        )
+
+                except Exception as error:
+                    st.error(f"No se pudo enviar el mensaje: {error}")
+                    return
+
+            st.markdown(assistant_message["content"])
+
+        st.session_state.mensajes.append({
+            "id": user_message.get("id"),
+            "role": user_message.get("role", "user"),
+            "content": user_message.get("content", mensaje_usuario),
+        })
+
+        st.session_state.mensajes.append({
+            "id": assistant_message.get("id"),
+            "role": assistant_message.get("role", "assistant"),
+            "content": assistant_message.get("content", ""),
+        })
+
+        cargar_conversacion(conversation_id, user_id)
+        st.rerun()
+        return
+
+    # --------------------------------------------------------
+    # Fallback local
+    # --------------------------------------------------------
     if not st.session_state.conversation_id:
         crear_y_cargar_nueva_conversacion(modulo_actual, user_id)
 
     conversation_id = st.session_state.conversation_id
 
-    # --------------------------------------------------------
-    # Guardar mensaje del usuario
-    # --------------------------------------------------------
     user_message_id = add_message(
         conversation_id=conversation_id,
         role="user",
@@ -2114,9 +2575,6 @@ def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str
     with st.chat_message("user"):
         st.markdown(mensaje_usuario)
 
-    # --------------------------------------------------------
-    # Generar respuesta
-    # --------------------------------------------------------
     with st.chat_message("assistant"):
         with st.spinner("Pensando..."):
             try:
@@ -2147,9 +2605,6 @@ def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str
 
         st.markdown(respuesta)
 
-    # --------------------------------------------------------
-    # Guardar respuesta
-    # --------------------------------------------------------
     assistant_message_id = add_message(
         conversation_id=conversation_id,
         role="assistant",
@@ -2173,37 +2628,30 @@ def render_app() -> None:
     """
     Renderiza la aplicación principal una vez autenticado.
     """
-    # --------------------------------------------------------
-    # Datos del usuario en sesión
-    # --------------------------------------------------------
     user_id = st.session_state.user_id
     display_name = st.session_state.display_name
     username = st.session_state.username
     is_admin = st.session_state.is_admin
+    shared_api = has_shared_api_session()
 
-    # --------------------------------------------------------
-    # Asegurar conversación activa
-    # --------------------------------------------------------
     asegurar_conversacion_activa(st.session_state.modulo_actual, user_id)
 
     modulo_actual = st.session_state.modulo_actual
     info_modulo = MODULE_INFO[modulo_actual]
 
-    conversaciones_modulo = list_conversations_by_module(
-        user_id=user_id,
-        module=modulo_actual,
-        limit=30
-    )
+    conversaciones_modulo = obtener_conversaciones_modulo(modulo_actual, user_id)
 
-    # --------------------------------------------------------
-    # Sidebar
-    # --------------------------------------------------------
     with st.sidebar:
         st.subheader("Tu sesión")
         st.write(f"**{display_name}**")
 
         rol_sidebar = "Administrador" if is_admin else "Usuario"
         st.caption(f"@{username} · {rol_sidebar}")
+
+        if shared_api:
+            st.caption("Modo compartido web / móvil")
+        else:
+            st.caption("Modo local de respaldo")
 
         if st.button("Cerrar sesión", width="stretch"):
             logout_everything()
@@ -2249,31 +2697,28 @@ def render_app() -> None:
             st.info("Todavía no tienes conversaciones en este módulo.")
         else:
             for conversacion in conversaciones_modulo:
-                titulo = conversacion["title"]
-                fecha = formatear_fecha(conversacion["updated_at"])
+                titulo = conversacion.get("title", "Conversación")
+                fecha = formatear_fecha(conversacion.get("updated_at", ""))
                 texto_boton = f"{titulo}\n{fecha}"
 
-                es_actual = conversacion["id"] == st.session_state.conversation_id
+                es_actual = conversacion.get("id") == st.session_state.conversation_id
                 etiqueta = f"● {texto_boton}" if es_actual else texto_boton
 
                 if st.button(
                     etiqueta,
-                    key=f"conv_{conversacion['id']}",
+                    key=f"conv_{conversacion.get('id')}",
                     width="stretch"
                 ):
-                    cargar_conversacion(conversacion["id"], user_id)
+                    cargar_conversacion(conversacion.get("id"), user_id)
                     st.rerun()
 
-    # --------------------------------------------------------
-    # Encabezado principal
-    # --------------------------------------------------------
     st.markdown(
         '<div class="main-title">Amigo Imaginario Neurodivergente</div>',
         unsafe_allow_html=True
     )
 
     st.markdown(
-        '<div class="main-subtitle">Fase 15.2 · Acompañante animado junto al chat</div>',
+        '<div class="main-subtitle">Fase 17 · Chat y biblioteca compartidos con fallback local</div>',
         unsafe_allow_html=True
     )
 
@@ -2289,9 +2734,6 @@ def render_app() -> None:
         unsafe_allow_html=True
     )
 
-    # --------------------------------------------------------
-    # Tarjetas de estado
-    # --------------------------------------------------------
     col_stat_1, col_stat_2, col_stat_3 = st.columns(3)
 
     with col_stat_1:
@@ -2323,9 +2765,6 @@ def render_app() -> None:
                 "Contenido actual de la biblioteca"
             )
 
-    # --------------------------------------------------------
-    # Selector de módulo
-    # --------------------------------------------------------
     col_modulo, col_accion = st.columns([4, 1], gap="medium")
 
     with col_modulo:
@@ -2343,9 +2782,6 @@ def render_app() -> None:
             crear_y_cargar_nueva_conversacion(modulo_actual, user_id)
             st.rerun()
 
-    # --------------------------------------------------------
-    # Si cambia el módulo, reiniciar estado conversacional
-    # --------------------------------------------------------
     if modulo_seleccionado != st.session_state.ultimo_modulo:
         st.session_state.modulo_actual = modulo_seleccionado
         st.session_state.ultimo_modulo = modulo_seleccionado
@@ -2359,9 +2795,6 @@ def render_app() -> None:
         asegurar_conversacion_activa(modulo_seleccionado, user_id)
         st.rerun()
 
-    # --------------------------------------------------------
-    # Refrescar módulo actual
-    # --------------------------------------------------------
     modulo_actual = st.session_state.modulo_actual
     info_modulo = MODULE_INFO[modulo_actual]
 
@@ -2375,25 +2808,19 @@ def render_app() -> None:
         unsafe_allow_html=True
     )
 
-    conversacion_actual = get_conversation_by_id(
-        st.session_state.conversation_id,
-        user_id
-    )
+    if st.session_state.conversation_id:
+        st.caption(f"Chat actual: {st.session_state.conversation_id}")
 
-    if conversacion_actual:
-        st.caption(f"Chat actual: {conversacion_actual['title']}")
-
-    # --------------------------------------------------------
-    # Chips informativos
-    # --------------------------------------------------------
     if not st.session_state.ui_focus_mode:
         chip_admin = "Sí" if is_admin else "No"
+        chip_sync = "Compartido" if shared_api else "Local"
 
         chips_html = f"""
         <span class="chip">Cuenta: @{username}</span>
         <span class="chip">Módulo: {MODULE_LABELS[modulo_actual]}</span>
         <span class="chip">Texto: {st.session_state.ui_font_size}</span>
         <span class="chip">Admin: {chip_admin}</span>
+        <span class="chip">Modo: {chip_sync}</span>
         """
 
         if modulo_actual == "amigo_imaginario":
@@ -2421,8 +2848,7 @@ def render_app() -> None:
                 <div class="info-card">
                     <div class="info-title">Chat educativo con apoyo de biblioteca interna</div>
                     <div class="info-text">
-                        Este chat intenta recuperar primero artículos y fragmentos relevantes de tu biblioteca
-                        antes de generar la respuesta.
+                        Puedes usar artículos como base para conversar y pedir explicaciones más sencillas.
                     </div>
                 </div>
                 """,
@@ -2485,7 +2911,7 @@ def render_app() -> None:
                 )
 
         with tab_biblioteca:
-            render_biblioteca_panel()
+            render_biblioteca_panel(user_id)
 
         if tab_admin is not None:
             with tab_admin:
@@ -2499,9 +2925,6 @@ def render_app() -> None:
             ["Chat", "Mi amigo", "Recuerdos suaves"]
         )
 
-        # ----------------------------------------------------
-        # Tab Chat
-        # ----------------------------------------------------
         with tab_chat:
             col_chat, col_companion = st.columns([2.3, 1], gap="large")
 
@@ -2583,15 +3006,9 @@ def render_app() -> None:
             with col_companion:
                 render_friend_companion_panel()
 
-        # ----------------------------------------------------
-        # Tab Mi amigo
-        # ----------------------------------------------------
         with tab_mi_amigo:
             render_friend_creation_panel(user_id)
 
-        # ----------------------------------------------------
-        # Tab Recuerdos suaves
-        # ----------------------------------------------------
         with tab_recuerdos:
             render_friend_memory_panel(user_id)
 
@@ -2666,9 +3083,6 @@ def render_app() -> None:
                 mensaje_usuario=mensaje_usuario
             )
 
-    # --------------------------------------------------------
-    # Aviso ético final
-    # --------------------------------------------------------
     st.divider()
     st.markdown(
         """
@@ -2698,6 +3112,11 @@ if errores_config:
 
     st.info("Revisa tu archivo .env y vuelve a ejecutar la aplicación.")
     st.stop()
+
+# ------------------------------------------------------------
+# Intentar restaurar sesión JWT compartida
+# ------------------------------------------------------------
+restore_api_session()
 
 # ------------------------------------------------------------
 # Sincronizar login OIDC de Google con la sesión local

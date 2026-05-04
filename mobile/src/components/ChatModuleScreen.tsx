@@ -1,7 +1,6 @@
 // ============================================================
 // src/components/ChatModuleScreen.tsx
-// Chat reutilizable con personalización visual basada
-// en el perfil guardado del usuario.
+// Chat reutilizable con avatar configurable desde móvil.
 // ============================================================
 
 import {
@@ -42,9 +41,6 @@ import {
   buildPersonalizedExamples,
 } from "../lib/companionTheme";
 
-// ------------------------------------------------------------
-// Props del módulo
-// ------------------------------------------------------------
 type ChatModuleScreenProps = {
   module: string;
   title: string;
@@ -53,11 +49,9 @@ type ChatModuleScreenProps = {
   companionSubtitle?: string;
   quickExamples?: string[];
   avatarVariant?: AvatarVariant;
+  initialConversationId?: number | null;
 };
 
-// ------------------------------------------------------------
-// Componente principal
-// ------------------------------------------------------------
 export default function ChatModuleScreen({
   module,
   title,
@@ -66,8 +60,9 @@ export default function ChatModuleScreen({
   companionSubtitle = "Conversa con calma y en un espacio seguro.",
   quickExamples = [],
   avatarVariant = "lumi",
+  initialConversationId = null,
 }: ChatModuleScreenProps) {
-  const { token, user } = useAuth();
+  const { token, user, avatarProfile } = useAuth();
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<number | null>(null);
@@ -77,20 +72,9 @@ export default function ChatModuleScreen({
   const [sending, setSending] = useState(false);
 
   const scrollRef = useRef<ScrollView>(null);
-
-  // ----------------------------------------------------------
-  // Animación flotante del avatar grande
-  // ----------------------------------------------------------
   const floatAnim = useRef(new Animated.Value(0)).current;
-
-  // ----------------------------------------------------------
-  // Indicador de "escribiendo..."
-  // ----------------------------------------------------------
   const [typingDots, setTypingDots] = useState(".");
 
-  // ----------------------------------------------------------
-  // Arrancar animación del avatar principal
-  // ----------------------------------------------------------
   useEffect(() => {
     const animation = Animated.loop(
       Animated.sequence([
@@ -114,9 +98,6 @@ export default function ChatModuleScreen({
     };
   }, [floatAnim]);
 
-  // ----------------------------------------------------------
-  // Animación simple del texto "escribiendo..."
-  // ----------------------------------------------------------
   useEffect(() => {
     if (!sending) {
       setTypingDots(".");
@@ -134,10 +115,6 @@ export default function ChatModuleScreen({
     return () => clearInterval(interval);
   }, [sending]);
 
-  // ----------------------------------------------------------
-  // Nombre visible del acompañante
-  // En Amigo se usa friend_name del usuario si existe
-  // ----------------------------------------------------------
   const visibleCompanionName = useMemo(() => {
     if (module === "amigo_imaginario") {
       return user?.friend_name || companionName;
@@ -146,16 +123,13 @@ export default function ChatModuleScreen({
     return companionName;
   }, [module, user, companionName]);
 
-  // ----------------------------------------------------------
-  // Tema visual dinámico según color favorito guardado
-  // ----------------------------------------------------------
   const theme = useMemo(() => {
-    return buildCompanionTheme(user?.favorite_color || "", avatarVariant);
-  }, [user, avatarVariant]);
+    return buildCompanionTheme(
+      avatarProfile?.primary_color || user?.favorite_color || "",
+      avatarVariant
+    );
+  }, [user, avatarProfile, avatarVariant]);
 
-  // ----------------------------------------------------------
-  // Subtítulo dinámico según estilo y confort preferido
-  // ----------------------------------------------------------
   const visibleSubtitle = useMemo(() => {
     if (module === "amigo_imaginario") {
       return buildCompanionSubtitle(
@@ -168,9 +142,6 @@ export default function ChatModuleScreen({
     return companionSubtitle;
   }, [module, visibleCompanionName, user, companionSubtitle]);
 
-  // ----------------------------------------------------------
-  // Ejemplos rápidos personalizados
-  // ----------------------------------------------------------
   const visibleExamples = useMemo(() => {
     if (module === "amigo_imaginario") {
       return buildPersonalizedExamples(
@@ -184,46 +155,60 @@ export default function ChatModuleScreen({
     return quickExamples;
   }, [module, quickExamples, user, visibleCompanionName]);
 
-  // ----------------------------------------------------------
-  // Cargar conversaciones del módulo
-  // ----------------------------------------------------------
   useEffect(() => {
-    if (!token) return;
+  if (!token) return;
 
-    const bootstrap = async () => {
-      try {
-        setLoading(true);
+  const bootstrap = async () => {
+    try {
+      setLoading(true);
 
-        const fetched = await listConversations(module, token);
-        setConversations(fetched);
+      const fetched = await listConversations(module, token);
+      setConversations(fetched);
 
-        if (fetched.length > 0) {
-          const firstConversationId = fetched[0].id;
-          setSelectedConversationId(firstConversationId);
+      // ------------------------------------------------------
+      // Si llega una conversación inicial desde otra pantalla,
+      // se intenta abrir esa primero.
+      // ------------------------------------------------------
+      let targetConversationId: number | null = null;
 
-          const fetchedMessages = await getConversationMessages(firstConversationId, token);
-          setMessages(fetchedMessages);
-        } else {
-          const created = await createConversationRequest(module, token);
-          setConversations([created]);
-          setSelectedConversationId(created.id);
+      if (initialConversationId) {
+        const existsInList = fetched.some(
+          (conversation) => conversation.id === initialConversationId
+        );
 
-          const fetchedMessages = await getConversationMessages(created.id, token);
-          setMessages(fetchedMessages);
+        if (existsInList) {
+          targetConversationId = initialConversationId;
         }
-      } catch (error: any) {
-        Alert.alert("Error", error?.message || "No se pudo cargar el chat.");
-      } finally {
-        setLoading(false);
       }
-    };
 
-    bootstrap();
-  }, [module, token]);
+      if (!targetConversationId && fetched.length > 0) {
+        targetConversationId = fetched[0].id;
+      }
 
-  // ----------------------------------------------------------
-  // Cargar mensajes al cambiar conversación
-  // ----------------------------------------------------------
+      if (!targetConversationId) {
+        const created = await createConversationRequest(module, token);
+        setConversations([created]);
+        targetConversationId = created.id;
+      }
+
+      setSelectedConversationId(targetConversationId);
+
+      const fetchedMessages = await getConversationMessages(
+        targetConversationId,
+        token
+      );
+
+      setMessages(fetchedMessages);
+    } catch (error: any) {
+      Alert.alert("Error", error?.message || "No se pudo cargar el chat.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  bootstrap();
+}, [module, token, initialConversationId]);
+
   useEffect(() => {
     if (!token || !selectedConversationId) return;
 
@@ -246,24 +231,17 @@ export default function ChatModuleScreen({
     loadMessages();
   }, [selectedConversationId, token]);
 
-  // ----------------------------------------------------------
-  // Desplazar hacia abajo cuando cambian mensajes
-  // ----------------------------------------------------------
   useEffect(() => {
     setTimeout(() => {
       scrollRef.current?.scrollToEnd({ animated: true });
     }, 120);
   }, [messages, sending]);
 
-  // ----------------------------------------------------------
-  // Crear nuevo chat
-  // ----------------------------------------------------------
   const handleNewConversation = async () => {
     if (!token) return;
 
     try {
       const created = await createConversationRequest(module, token);
-
       setConversations([created, ...conversations]);
       setSelectedConversationId(created.id);
       setMessages([]);
@@ -273,9 +251,6 @@ export default function ChatModuleScreen({
     }
   };
 
-  // ----------------------------------------------------------
-  // Enviar mensaje
-  // ----------------------------------------------------------
   const handleSend = async (forcedContent?: string) => {
     if (!token || !selectedConversationId) return;
 
@@ -318,9 +293,6 @@ export default function ChatModuleScreen({
     }
   };
 
-  // ----------------------------------------------------------
-  // Vista de carga
-  // ----------------------------------------------------------
   if (loading) {
     return (
       <View style={styles.centered}>
@@ -336,15 +308,13 @@ export default function ChatModuleScreen({
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <View style={styles.screen}>
-        {/* Encabezado principal */}
         <View style={styles.headerCard}>
           <View style={styles.headerTopRow}>
             <Animated.View style={{ transform: [{ translateY: floatAnim }] }}>
               <CompanionAvatar
                 size={64}
-                variant={avatarVariant}
                 label={visibleCompanionName}
-                theme={theme}
+                profile={avatarProfile}
               />
             </Animated.View>
 
@@ -365,7 +335,6 @@ export default function ChatModuleScreen({
           </Pressable>
         </View>
 
-        {/* Ejemplos rápidos */}
         {visibleExamples.length > 0 && (
           <ScrollView
             horizontal
@@ -398,7 +367,6 @@ export default function ChatModuleScreen({
           </ScrollView>
         )}
 
-        {/* Historial de conversaciones */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -435,7 +403,6 @@ export default function ChatModuleScreen({
           })}
         </ScrollView>
 
-        {/* Área de mensajes */}
         <ScrollView
           ref={scrollRef}
           style={styles.messagesArea}
@@ -446,9 +413,8 @@ export default function ChatModuleScreen({
             <View style={styles.emptyStateCard}>
               <CompanionAvatar
                 size={54}
-                variant={avatarVariant}
                 label={visibleCompanionName}
-                theme={theme}
+                profile={avatarProfile}
               />
 
               <Text style={styles.emptyStateTitle}>
@@ -476,10 +442,9 @@ export default function ChatModuleScreen({
                   <View style={styles.assistantMetaRow}>
                     <CompanionAvatar
                       size={28}
-                      variant={avatarVariant}
                       label={visibleCompanionName}
                       showBadge={false}
-                      theme={theme}
+                      profile={avatarProfile}
                     />
                     <Text style={styles.assistantNameText}>{visibleCompanionName}</Text>
                   </View>
@@ -506,16 +471,14 @@ export default function ChatModuleScreen({
             );
           })}
 
-          {/* Indicador de escritura */}
           {sending && (
             <View style={styles.assistantMessageWrapper}>
               <View style={styles.assistantMetaRow}>
                 <CompanionAvatar
                   size={28}
-                  variant={avatarVariant}
                   label={visibleCompanionName}
                   showBadge={false}
-                  theme={theme}
+                  profile={avatarProfile}
                 />
                 <Text style={styles.assistantNameText}>{visibleCompanionName}</Text>
               </View>
@@ -535,7 +498,6 @@ export default function ChatModuleScreen({
           )}
         </ScrollView>
 
-        {/* Área de entrada */}
         <View style={styles.inputCard}>
           <TextInput
             value={input}
@@ -577,7 +539,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#f3f5f9",
   },
-
   screen: {
     flex: 1,
     backgroundColor: "#f3f5f9",
@@ -585,7 +546,6 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 10,
   },
-
   centered: {
     flex: 1,
     backgroundColor: "#f3f5f9",
@@ -593,13 +553,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     padding: 20,
   },
-
   loadingText: {
     marginTop: 12,
     color: "#526075",
     fontSize: 15,
   },
-
   headerCard: {
     backgroundColor: "#ffffff",
     borderRadius: 22,
@@ -611,30 +569,25 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 5 },
     elevation: 3,
   },
-
   headerTopRow: {
     flexDirection: "row",
     alignItems: "center",
   },
-
   headerTextBlock: {
     flex: 1,
     marginLeft: 14,
   },
-
   headerTitle: {
     color: "#0f172a",
     fontSize: 18,
     fontWeight: "800",
   },
-
   headerSubtitle: {
     marginTop: 4,
     color: "#64748b",
     fontSize: 14,
     lineHeight: 20,
   },
-
   newChatButton: {
     marginTop: 14,
     alignSelf: "flex-start",
@@ -645,73 +598,59 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
     borderRadius: 14,
   },
-
   newChatButtonText: {
     color: "#ffffff",
     fontWeight: "700",
     fontSize: 15,
   },
-
   examplesRow: {
     maxHeight: 52,
     marginBottom: 8,
   },
-
   examplesRowContent: {
     gap: 8,
     paddingRight: 10,
   },
-
   exampleChip: {
     borderRadius: 999,
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderWidth: 1,
   },
-
   exampleChipText: {
     fontWeight: "700",
     fontSize: 13,
   },
-
   conversationsBar: {
     maxHeight: 48,
     marginBottom: 8,
   },
-
   conversationsContent: {
     gap: 8,
     paddingRight: 12,
   },
-
   conversationChip: {
     borderRadius: 999,
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
-
   conversationChipText: {
     fontWeight: "600",
     maxWidth: 180,
   },
-
   conversationChipTextActive: {
     color: "#ffffff",
   },
-
   conversationChipTextInactive: {
     color: "#1f2937",
   },
-
   messagesArea: {
     flex: 1,
   },
-
   messagesContent: {
     paddingTop: 6,
     paddingBottom: 16,
   },
-
   emptyStateCard: {
     backgroundColor: "#ffffff",
     borderRadius: 20,
@@ -724,7 +663,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     elevation: 2,
   },
-
   emptyStateTitle: {
     marginTop: 10,
     fontSize: 16,
@@ -732,26 +670,21 @@ const styles = StyleSheet.create({
     color: "#0f172a",
     textAlign: "center",
   },
-
   emptyStateText: {
     marginTop: 6,
     color: "#64748b",
     textAlign: "center",
     lineHeight: 20,
   },
-
   messageWrapper: {
     marginBottom: 14,
   },
-
   userMessageWrapper: {
     alignItems: "flex-end",
   },
-
   assistantMessageWrapper: {
     alignItems: "flex-start",
   },
-
   assistantMetaRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -759,24 +692,20 @@ const styles = StyleSheet.create({
     paddingLeft: 2,
     gap: 8,
   },
-
   assistantNameText: {
     color: "#516076",
     fontWeight: "700",
     fontSize: 13,
   },
-
   messageBubble: {
     maxWidth: "84%",
     paddingHorizontal: 16,
     paddingVertical: 13,
     borderRadius: 20,
   },
-
   userBubble: {
     borderBottomRightRadius: 8,
   },
-
   assistantBubble: {
     borderBottomLeftRadius: 8,
     shadowColor: "#000",
@@ -785,26 +714,21 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 3 },
     elevation: 1,
   },
-
   messageText: {
     fontSize: 16,
     lineHeight: 23,
   },
-
   userMessageText: {
     color: "#ffffff",
   },
-
   assistantMessageText: {
     color: "#101828",
   },
-
   assistantTypingText: {
     color: "#526075",
     fontSize: 15,
     fontStyle: "italic",
   },
-
   inputCard: {
     backgroundColor: "#ffffff",
     borderRadius: 22,
@@ -816,7 +740,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     elevation: 2,
   },
-
   input: {
     minHeight: 64,
     maxHeight: 130,
@@ -825,7 +748,6 @@ const styles = StyleSheet.create({
     textAlignVertical: "top",
     paddingTop: 4,
   },
-
   inputFooter: {
     marginTop: 10,
     flexDirection: "row",
@@ -833,13 +755,11 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 10,
   },
-
   inputHint: {
     flex: 1,
     fontSize: 12,
     lineHeight: 17,
   },
-
   sendButton: {
     paddingHorizontal: 16,
     paddingVertical: 11,
@@ -848,11 +768,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
-
   sendButtonDisabled: {
     opacity: 0.6,
   },
-
   sendButtonText: {
     color: "#ffffff",
     fontWeight: "800",

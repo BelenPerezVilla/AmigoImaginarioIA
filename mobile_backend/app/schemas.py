@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 
 # ------------------------------------------------------------
 # Usuario de salida para respuestas del backend
-# Incluye personalización del amigo imaginario.
 # ------------------------------------------------------------
 class UserOut(BaseModel):
     id: int
@@ -20,6 +19,20 @@ class UserOut(BaseModel):
     favorite_activity: str = ""
     encouragement_style: str = ""
     preferred_comfort: str = "cuentos"
+
+
+# ------------------------------------------------------------
+# Perfil visual del avatar del amigo imaginario
+# ------------------------------------------------------------
+class ImaginaryFriendAvatarOut(BaseModel):
+    face_shape: str = "redondo"
+    primary_color: str = "azul"
+    hair_style: str = "corto"
+    hair_color: str = "castano"
+    eye_style: str = "felices"
+    mouth_style: str = "sonrisa"
+    accessory: str = "estrella"
+    background_style: str = "cielo"
 
 
 # ------------------------------------------------------------
@@ -51,6 +64,20 @@ class UpdateFriendPreferencesRequest(BaseModel):
 
 
 # ------------------------------------------------------------
+# Payload para actualizar avatar del amigo imaginario
+# ------------------------------------------------------------
+class UpdateImaginaryFriendAvatarRequest(BaseModel):
+    face_shape: str = Field(default="redondo", max_length=30)
+    primary_color: str = Field(default="azul", max_length=30)
+    hair_style: str = Field(default="corto", max_length=30)
+    hair_color: str = Field(default="castano", max_length=30)
+    eye_style: str = Field(default="felices", max_length=30)
+    mouth_style: str = Field(default="sonrisa", max_length=30)
+    accessory: str = Field(default="estrella", max_length=30)
+    background_style: str = Field(default="cielo", max_length=30)
+
+
+# ------------------------------------------------------------
 # Respuesta de autenticación
 # ------------------------------------------------------------
 class AuthResponse(BaseModel):
@@ -69,13 +96,6 @@ class ConversationOut(BaseModel):
     title: str
     created_at: str
     updated_at: str
-
-
-# ------------------------------------------------------------
-# Payload opcional para crear conversación
-# ------------------------------------------------------------
-class CreateConversationRequest(BaseModel):
-    module: str
 
 
 # ------------------------------------------------------------
@@ -114,3 +134,20 @@ class ArticleOut(BaseModel):
     short_description: str
     content: str
     created_at: str
+
+
+# ------------------------------------------------------------
+# Estado de favorito para un artículo
+# ------------------------------------------------------------
+class FavoriteStateOut(BaseModel):
+    article_id: int
+    is_favorite: bool
+
+
+# ------------------------------------------------------------
+# Respuesta al mandar un artículo al chat del amigo
+# ------------------------------------------------------------
+class SendArticleToChatResponse(BaseModel):
+    conversation_id: int
+    module: str
+    title: str

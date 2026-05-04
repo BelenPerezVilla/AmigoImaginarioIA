@@ -15,7 +15,6 @@ import secrets
 import sqlite3
 from typing import Optional
 
-from streamlit import connection
 
 from config import DATABASE_PATH
 
@@ -90,6 +89,20 @@ def initialize_database() -> None:
             password_hash TEXT NOT NULL,
             is_admin INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+# Tabla de artículos favoritos por usuario
+# --------------------------------------------------------
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS article_favorites (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            article_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, article_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
         );
     """)
 # --------------------------------------------------------
@@ -265,6 +278,19 @@ def initialize_database() -> None:
     # --------------------------------------------------------
     # Índices
     # --------------------------------------------------------
+
+# Índices para favoritos de biblioteca
+# --------------------------------------------------------
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_article_favorites_user
+        ON article_favorites(user_id, created_at DESC);
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_article_favorites_article
+        ON article_favorites(article_id);
+    """)
+
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_users_username
         ON users(username);
@@ -2557,3 +2583,135 @@ def create_google_user(google_sub: str, email: str, display_name: str = "") -> d
         raise ValueError("No se pudo recuperar el usuario Google recién creado.")
 
     return usuario
+
+# ============================================================
+# Favoritos de Biblioteca
+# ============================================================
+
+# ------------------------------------------------------------
+# Agregar artículo a favoritos
+# ------------------------------------------------------------
+def add_article_to_favorites(user_id: int, article_id: int) -> None:
+    """
+    Guarda un artículo como favorito para un usuario.
+
+    Parámetros:
+        user_id (int): id del usuario
+        article_id (int): id del artículo
+    """
+    article = get_article_by_id(article_id)
+
+    if not article:
+        raise ValueError("El artículo no existe.")
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        INSERT OR IGNORE INTO article_favorites (user_id, article_id)
+        VALUES (?, ?);
+    """, (user_id, article_id))
+
+    connection.commit()
+    connection.close()
+
+
+# ------------------------------------------------------------
+# Quitar artículo de favoritos
+# ------------------------------------------------------------
+def remove_article_from_favorites(user_id: int, article_id: int) -> None:
+    """
+    Elimina un artículo de favoritos para un usuario.
+
+    Parámetros:
+        user_id (int): id del usuario
+        article_id (int): id del artículo
+    """
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        DELETE FROM article_favorites
+        WHERE user_id = ? AND article_id = ?;
+    """, (user_id, article_id))
+
+    connection.commit()
+    connection.close()
+
+
+# ------------------------------------------------------------
+# Listar artículos favoritos de un usuario
+# ------------------------------------------------------------
+def list_favorite_articles(user_id: int) -> list[dict]:
+    """
+    Devuelve los artículos favoritos de un usuario.
+
+    Parámetros:
+        user_id (int): id del usuario
+
+    Retorna:
+        list[dict]: artículos favoritos
+    """
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            a.id,
+            a.title,
+            a.category,
+            a.reader_type,
+            a.short_description,
+            a.content,
+            a.created_at
+        FROM article_favorites af
+        INNER JOIN articles a
+            ON a.id = af.article_id
+        WHERE af.user_id = ?
+        ORDER BY af.created_at DESC, a.title ASC;
+    """, (user_id,))
+
+    rows = cursor.fetchall()
+    connection.close()
+
+    return [
+        {
+            "id": row["id"],
+            "title": row["title"],
+            "category": row["category"],
+            "reader_type": row["reader_type"],
+            "short_description": row["short_description"],
+            "content": row["content"],
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+# ------------------------------------------------------------
+# Verificar si un artículo está en favoritos
+# ------------------------------------------------------------
+def is_article_favorite(user_id: int, article_id: int) -> bool:
+    """
+    Revisa si un artículo ya está guardado como favorito.
+
+    Parámetros:
+        user_id (int): id del usuario
+        article_id (int): id del artículo
+
+    Retorna:
+        bool: True si está en favoritos
+    """
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT 1
+        FROM article_favorites
+        WHERE user_id = ? AND article_id = ?;
+    """, (user_id, article_id))
+
+    exists = cursor.fetchone() is not None
+    connection.close()
+
+    return exists

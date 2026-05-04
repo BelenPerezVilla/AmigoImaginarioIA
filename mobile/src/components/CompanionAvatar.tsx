@@ -1,118 +1,171 @@
 // ============================================================
 // src/components/CompanionAvatar.tsx
-// Avatar visual del acompañante.
-// Usa el tema dinámico construido desde companionTheme.ts
+// Avatar visual del acompañante configurable desde móvil.
 // ============================================================
 
 import { StyleSheet, Text, View } from "react-native";
-import type { AvatarVariant, CompanionTheme } from "../lib/companionTheme";
+import type { ImaginaryFriendAvatar } from "../lib/api";
 
 // ------------------------------------------------------------
-// Props del avatar
+// Props del componente
 // ------------------------------------------------------------
 type CompanionAvatarProps = {
   size?: number;
-  variant?: AvatarVariant;
   label?: string;
   showBadge?: boolean;
-  theme: CompanionTheme;
+  profile: ImaginaryFriendAvatar;
 };
+
+// ------------------------------------------------------------
+// Resolver color visual por nombre común
+// ------------------------------------------------------------
+function colorValue(name: string): string {
+  const value = String(name || "").trim().toLowerCase();
+
+  const map: Record<string, string> = {
+    azul: "#4f8ef7",
+    rosa: "#ef7bb3",
+    verde: "#49b97f",
+    morado: "#8d6cf7",
+    amarillo: "#f1c84b",
+    naranja: "#f19a4b",
+    turquesa: "#35b8b8",
+    negro: "#2d2d2d",
+    blanco: "#f5f7fb",
+    castano: "#7b4b2a",
+    castaño: "#7b4b2a",
+    rubio: "#e2c26d",
+    rojo: "#d95c5c",
+    cielo: "#dcecff",
+  };
+
+  return map[value] || "#4f8ef7";
+}
 
 // ------------------------------------------------------------
 // Avatar principal
 // ------------------------------------------------------------
 export default function CompanionAvatar({
-  size = 58,
-  variant = "lumi",
+  size = 60,
   label = "L",
   showBadge = true,
-  theme,
+  profile,
 }: CompanionAvatarProps) {
-  // ----------------------------------------------------------
-  // Medidas internas relativas al tamaño
-  // ----------------------------------------------------------
-  const outerSize = size;
-  const innerSize = size * 0.78;
-  const eyeSize = Math.max(4, size * 0.08);
-  const badgeSize = Math.max(16, size * 0.26);
+  const primaryColor = colorValue(profile.primary_color);
+  const hairColor = colorValue(profile.hair_color);
 
-  // ----------------------------------------------------------
-  // Badge según la variante del acompañante
-  // ----------------------------------------------------------
-  const badgeSymbol = variant === "guide" ? "★" : "☁";
+  const backgroundColor =
+    profile.background_style === "nubes"
+      ? "#eef6ff"
+      : profile.background_style === "brillo"
+      ? "#fff7d8"
+      : profile.background_style === "suave"
+      ? "#f2edff"
+      : "#e8f2ff";
+
+  const faceRadius =
+    profile.face_shape === "ovalado"
+      ? size * 0.28
+      : profile.face_shape === "cuadrado"
+      ? 14
+      : size * 0.32;
+
+  const eyeMode = profile.eye_style;
+  const mouthMode = profile.mouth_style;
+  const accessoryMode = profile.accessory;
+  const hairMode = profile.hair_style;
+
+  const outerSize = size;
+  const faceWidth = size * 0.66;
+  const faceHeight =
+    profile.face_shape === "ovalado" ? size * 0.78 : size * 0.66;
+
+  const badgeSymbol =
+    accessoryMode === "corazon"
+      ? "♥"
+      : accessoryMode === "moño"
+      ? "⌯"
+      : accessoryMode === "luna"
+      ? "☾"
+      : accessoryMode === "ninguno"
+      ? ""
+      : "★";
 
   return (
     <View
       style={[
-        styles.outerCircle,
+        styles.outer,
         {
           width: outerSize,
           height: outerSize,
           borderRadius: outerSize / 2,
-          backgroundColor: theme.outer,
-          borderColor: theme.accentStrong,
+          backgroundColor,
+          borderColor: primaryColor,
         },
       ]}
     >
-      {/* Cabecita principal */}
+      {/* Cabello */}
+      {hairMode !== "ninguno" && (
+        <View
+          style={[
+            styles.hairBase,
+            hairMode === "largo" && styles.hairLong,
+            hairMode === "rizado" && styles.hairCurly,
+            {
+              backgroundColor: hairColor,
+              width: faceWidth * 0.9,
+            },
+          ]}
+        />
+      )}
+
+      {/* Rostro */}
       <View
         style={[
-          styles.innerCircle,
+          styles.face,
           {
-            width: innerSize,
-            height: innerSize,
-            borderRadius: innerSize / 2,
-            backgroundColor: theme.inner,
+            width: faceWidth,
+            height: faceHeight,
+            borderRadius: faceRadius,
+            backgroundColor: primaryColor,
           },
         ]}
       >
         {/* Ojos */}
         <View style={styles.eyesRow}>
-          <View
-            style={[
-              styles.eye,
-              {
-                width: eyeSize,
-                height: eyeSize,
-                borderRadius: eyeSize / 2,
-                backgroundColor: theme.eye,
-              },
-            ]}
-          />
-          <View
-            style={[
-              styles.eye,
-              {
-                width: eyeSize,
-                height: eyeSize,
-                borderRadius: eyeSize / 2,
-                backgroundColor: theme.eye,
-              },
-            ]}
-          />
+          {eyeMode === "cerraditos" ? (
+            <>
+              <View style={styles.closedEye} />
+              <View style={styles.closedEye} />
+            </>
+          ) : eyeMode === "grandes" ? (
+            <>
+              <View style={styles.bigEye} />
+              <View style={styles.bigEye} />
+            </>
+          ) : (
+            <>
+              <View style={styles.eye} />
+              <View style={styles.eye} />
+            </>
+          )}
         </View>
 
-        {/* Sonrisa */}
-        <View
-          style={[
-            styles.mouth,
-            {
-              borderColor: theme.mouth,
-              width: innerSize * 0.24,
-              height: innerSize * 0.12,
-              borderBottomWidth: 2.5,
-              borderRadius: innerSize * 0.12,
-            },
-          ]}
-        />
+        {/* Boca */}
+        {mouthMode === "abierta" ? (
+          <View style={styles.openMouth} />
+        ) : mouthMode === "curva" ? (
+          <View style={styles.softMouth} />
+        ) : (
+          <View style={styles.smile} />
+        )}
 
         {/* Letra decorativa */}
         <Text
           style={[
-            styles.avatarLetter,
+            styles.letter,
             {
-              color: "#ffffffcc",
-              fontSize: size * 0.22,
+              fontSize: size * 0.18,
             },
           ]}
         >
@@ -120,26 +173,27 @@ export default function CompanionAvatar({
         </Text>
       </View>
 
-      {/* Badge */}
-      {showBadge && (
+      {/* Badge accesorio */}
+      {showBadge && accessoryMode !== "ninguno" && (
         <View
           style={[
             styles.badge,
             {
-              width: badgeSize,
-              height: badgeSize,
-              borderRadius: badgeSize / 2,
-              backgroundColor: "#ffffff",
-              borderColor: theme.accentStrong,
+              width: size * 0.24,
+              height: size * 0.24,
+              borderRadius: size * 0.12,
+              borderColor: primaryColor,
             },
           ]}
         >
           <Text
-            style={{
-              fontSize: badgeSize * 0.52,
-              color: theme.accentStrong,
-              lineHeight: badgeSize * 0.62,
-            }}
+            style={[
+              styles.badgeText,
+              {
+                color: primaryColor,
+                fontSize: size * 0.13,
+              },
+            ]}
           >
             {badgeSymbol}
           </Text>
@@ -150,14 +204,32 @@ export default function CompanionAvatar({
 }
 
 const styles = StyleSheet.create({
-  outerCircle: {
+  outer: {
     justifyContent: "center",
     alignItems: "center",
     borderWidth: 2,
     position: "relative",
+    overflow: "hidden",
   },
 
-  innerCircle: {
+  hairBase: {
+    position: "absolute",
+    top: 10,
+    height: 16,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+  },
+
+  hairLong: {
+    height: 24,
+  },
+
+  hairCurly: {
+    height: 20,
+    borderRadius: 20,
+  },
+
+  face: {
     justifyContent: "center",
     alignItems: "center",
     position: "relative",
@@ -165,32 +237,74 @@ const styles = StyleSheet.create({
 
   eyesRow: {
     flexDirection: "row",
-    gap: 8,
+    gap: 10,
     marginBottom: 6,
   },
 
-  eye: {},
-
-  mouth: {
-    borderTopWidth: 0,
-    borderLeftWidth: 0,
-    borderRightWidth: 0,
-    marginTop: 2,
+  eye: {
+    width: 5,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: "#17325e",
   },
 
-  avatarLetter: {
+  bigEye: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: "#17325e",
+  },
+
+  closedEye: {
+    width: 8,
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: "#17325e",
+    marginTop: 3,
+  },
+
+  smile: {
+    width: 14,
+    height: 7,
+    borderBottomWidth: 2.5,
+    borderColor: "#1b4a8a",
+    borderRadius: 20,
+  },
+
+  softMouth: {
+    width: 12,
+    height: 4,
+    borderBottomWidth: 2,
+    borderColor: "#1b4a8a",
+    borderRadius: 20,
+  },
+
+  openMouth: {
+    width: 10,
+    height: 8,
+    borderRadius: 6,
+    backgroundColor: "#1b4a8a",
+  },
+
+  letter: {
     position: "absolute",
-    bottom: 8,
-    right: 10,
+    bottom: 5,
+    right: 8,
+    color: "#ffffffcc",
     fontWeight: "800",
   },
 
   badge: {
     position: "absolute",
-    right: -4,
-    bottom: -2,
+    right: 2,
+    bottom: 2,
+    backgroundColor: "#ffffff",
     justifyContent: "center",
     alignItems: "center",
-    borderWidth: 1.5,
+    borderWidth: 1.4,
+  },
+
+  badgeText: {
+    fontWeight: "800",
   },
 });

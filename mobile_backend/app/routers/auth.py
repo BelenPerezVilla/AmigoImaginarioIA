@@ -8,17 +8,21 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from database.chat_db import (
     authenticate_user,
     create_user,
+    get_imaginary_friend_profile,
     get_user_by_id,
     update_friend_name,
     update_friend_profile,
+    update_imaginary_friend_profile,
 )
 from mobile_backend.app.core.deps import get_current_user
 from mobile_backend.app.core.security import create_access_token
 from mobile_backend.app.schemas import (
     AuthResponse,
+    ImaginaryFriendAvatarOut,
     LoginRequest,
     RegisterRequest,
     UpdateFriendPreferencesRequest,
+    UpdateImaginaryFriendAvatarRequest,
     UserOut,
 )
 
@@ -39,6 +43,22 @@ def build_user_out(user: dict) -> UserOut:
         favorite_activity=user.get("favorite_activity", "") or "",
         encouragement_style=user.get("encouragement_style", "") or "",
         preferred_comfort=user.get("preferred_comfort", "cuentos") or "cuentos",
+    )
+
+
+# ------------------------------------------------------------
+# Convertir dict de avatar a esquema de salida
+# ------------------------------------------------------------
+def build_avatar_out(profile: dict) -> ImaginaryFriendAvatarOut:
+    return ImaginaryFriendAvatarOut(
+        face_shape=profile.get("face_shape", "redondo") or "redondo",
+        primary_color=profile.get("primary_color", "azul") or "azul",
+        hair_style=profile.get("hair_style", "corto") or "corto",
+        hair_color=profile.get("hair_color", "castano") or "castano",
+        eye_style=profile.get("eye_style", "felices") or "felices",
+        mouth_style=profile.get("mouth_style", "sonrisa") or "sonrisa",
+        accessory=profile.get("accessory", "estrella") or "estrella",
+        background_style=profile.get("background_style", "cielo") or "cielo",
     )
 
 
@@ -113,17 +133,13 @@ def update_preferences(
     current_user: dict = Depends(get_current_user),
 ) -> UserOut:
     try:
-        # ----------------------------------------------------
-        # Guardar nombre del amigo imaginario
-        # ----------------------------------------------------
+        # Guardar nombre del amigo
         update_friend_name(
             user_id=current_user["id"],
             friend_name=payload.friend_name,
         )
 
-        # ----------------------------------------------------
         # Guardar memoria suave del vínculo
-        # ----------------------------------------------------
         update_friend_profile(
             user_id=current_user["id"],
             favorite_color=payload.favorite_color,
@@ -132,9 +148,6 @@ def update_preferences(
             preferred_comfort=payload.preferred_comfort,
         )
 
-        # ----------------------------------------------------
-        # Devolver usuario actualizado desde base de datos
-        # ----------------------------------------------------
         updated_user = get_user_by_id(current_user["id"])
 
         if not updated_user:
@@ -150,3 +163,38 @@ def update_preferences(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(error)
         ) from error
+
+
+# ------------------------------------------------------------
+# Obtener avatar actual del amigo imaginario
+# ------------------------------------------------------------
+@router.get("/me/avatar", response_model=ImaginaryFriendAvatarOut)
+def get_avatar(
+    current_user: dict = Depends(get_current_user),
+) -> ImaginaryFriendAvatarOut:
+    profile = get_imaginary_friend_profile(current_user["id"])
+    return build_avatar_out(profile)
+
+
+# ------------------------------------------------------------
+# Actualizar avatar visual del amigo imaginario
+# ------------------------------------------------------------
+@router.patch("/me/avatar", response_model=ImaginaryFriendAvatarOut)
+def update_avatar(
+    payload: UpdateImaginaryFriendAvatarRequest,
+    current_user: dict = Depends(get_current_user),
+) -> ImaginaryFriendAvatarOut:
+    update_imaginary_friend_profile(
+        user_id=current_user["id"],
+        face_shape=payload.face_shape,
+        primary_color=payload.primary_color,
+        hair_style=payload.hair_style,
+        hair_color=payload.hair_color,
+        eye_style=payload.eye_style,
+        mouth_style=payload.mouth_style,
+        accessory=payload.accessory,
+        background_style=payload.background_style,
+    )
+
+    updated_profile = get_imaginary_friend_profile(current_user["id"])
+    return build_avatar_out(updated_profile)
