@@ -34,6 +34,16 @@ import streamlit as st
 # Configuración general del proyecto
 # ------------------------------------------------------------
 from config import validar_configuracion
+from database.access_control import (
+    LEGAL_NOTICE_TEXT,
+    allowed_modules_for_role,
+    get_role_label,
+    get_token_status,
+    normalize_role,
+    can_send_message_with_tokens,
+    build_no_tokens_assistant_message,
+    consume_user_token,
+)
 
 # ------------------------------------------------------------
 # Cliente de autenticación compartida web / móvil
@@ -47,6 +57,16 @@ from services.web_auth import (
 # ------------------------------------------------------------
 # Servicios web para biblioteca compartida
 # ------------------------------------------------------------
+from services.web_access import (
+    admin_create_guest,
+    admin_deactivate_guest,
+    admin_extend_guest,
+    admin_list_guests,
+    admin_list_users,
+    admin_update_token_policy,
+    admin_update_user_role,
+    get_my_token_status,
+)
 from services.web_library import (
     get_library_article,
     get_library_filter_options,
@@ -109,6 +129,36 @@ from prompts import (
 )
 
 # ------------------------------------------------------------
+# Registrar Administración como módulo visible en la web.
+# No es un chat; es un panel administrativo.
+# ------------------------------------------------------------
+MODULE_LABELS["admin_panel"] = "Administración"
+
+MODULE_INFO["admin_panel"] = {
+    "bienvenida": "Panel de administración del sistema.",
+    "descripcion": (
+        "Gestiona usuarios, cuentas guest, roles, tokens y configuraciones "
+        "generales del sistema."
+    ),
+    "placeholder": "Selecciona una opción del panel de administración.",
+    "ejemplos": [
+        "Crear una cuenta guest",
+        "Revisar usuarios registrados",
+        "Configurar tokens de un usuario",
+    ],
+}
+
+
+# ------------------------------------------------------------
+# Módulos que sí usan conversaciones tipo chat.
+# Administración queda fuera para evitar errores de permisos.
+# ------------------------------------------------------------
+CHAT_MODULES = {
+    "amigo_imaginario",
+    "biblioteca_inteligente",
+    "modo_padres",
+}
+# ------------------------------------------------------------
 # Servicios Gemini
 # ------------------------------------------------------------
 from services.gemini_service import (
@@ -131,6 +181,8 @@ from utils.avatar_svg import (
     build_friend_avatar_svg,
 )
 
+
+
 # ------------------------------------------------------------
 # Configuración general de la página
 # ------------------------------------------------------------
@@ -139,6 +191,22 @@ st.set_page_config(
     page_icon="💙",
     layout="wide"
 )
+# ============================================================
+# Reinicio seguro de sesión
+# Permite limpiar el estado viejo de Streamlit entrando con:
+# http://localhost:8501/?reset=1
+# ============================================================
+
+if st.query_params.get("reset") == "1":
+    # Borra todas las variables guardadas en la sesión actual
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+
+    # Limpia el parámetro de la URL
+    st.query_params.clear()
+
+    # Recarga la app desde cero
+    st.rerun()
 
 
 # ------------------------------------------------------------
@@ -196,6 +264,18 @@ def inicializar_estado() -> None:
 
     if "is_admin" not in st.session_state:
         st.session_state.is_admin = False
+
+    if "role" not in st.session_state:
+        st.session_state.role = "child"
+
+    if "role_label" not in st.session_state:
+        st.session_state.role_label = "Usuario niño"
+
+    if "allowed_modules" not in st.session_state:
+        st.session_state.allowed_modules = ["amigo_imaginario"]
+
+    if "token_status" not in st.session_state:
+        st.session_state.token_status = None
 
     # --------------------------------------------------------
     # Sesión compartida basada en FastAPI
@@ -549,20 +629,236 @@ def has_shared_api_session() -> bool:
     """
     return bool(st.session_state.get("auth_token"))
 
+# ------------------------------------------------------------
+# Asegurar módulos permitidos según rol
+# Agrega el módulo admin_panel cuando el usuario es superadmin.
+# ------------------------------------------------------------
+def asegurar_modulos_por_rol(role: str, allowed_modules: list[str] | None) -> list[str]:
+    """
+    Devuelve los módulos permitidos y agrega Administración
+    cuando el usuario tiene rol superadmin.
+
+    Parámetros:
+        role (str): rol actual del usuario.
+        allowed_modules (list[str] | None): módulos actuales del usuario.
+
+    Retorna:
+        list[str]: módulos finales disponibles para la navegación.
+    """
+    modules = list(allowed_modules or [])
+
+    if role == "superadmin" and "admin_panel" not in modules:
+        modules.append("admin_panel")
+
+    return modules
+# ------------------------------------------------------------
+# Verificar si un módulo funciona como chat
+# ------------------------------------------------------------
+def es_modulo_chat(modulo: str) -> bool:
+    """
+    Indica si el módulo usa conversaciones.
+
+    Administración no debe crear conversaciones.
+    """
+    return modulo in CHAT_MODULES
+
+
+# ------------------------------------------------------------
+# Asegurar módulos permitidos según rol
+# ------------------------------------------------------------
+def asegurar_modulos_por_rol(role: str, allowed_modules: list[str] | None) -> list[str]:
+    """
+    Devuelve módulos permitidos finales para navegación.
+
+    Parámetros:
+        role (str): rol normalizado del usuario.
+        allowed_modules (list[str] | None): módulos recibidos desde backend.
+
+    Retorna:
+        list[str]: módulos disponibles en la interfaz.
+    """
+    modules = list(allowed_modules or allowed_modules_for_role(role))
+
+    # --------------------------------------------------------
+    # Superadmin siempre debe ver Administración
+    # --------------------------------------------------------
+    if role == "superadmin" and "admin_panel" not in modules:
+        modules.append("admin_panel")
+
+    # --------------------------------------------------------
+    # Evitar módulos que no existan en labels/info
+    # --------------------------------------------------------
+    modules = [
+        module
+        for module in modules
+        if module in MODULE_LABELS and module in MODULE_INFO
+    ]
+
+    return modules
+
+
+# ------------------------------------------------------------
+# Obtener módulos visibles desde la sesión
+# ------------------------------------------------------------
+def obtener_modulos_visibles_sesion() -> list[str]:
+    """
+    Obtiene los módulos permitidos para el usuario actual.
+    """
+    role = st.session_state.get("user_role", "child")
+    allowed_modules = st.session_state.get("allowed_modules", [])
+
+    modules = asegurar_modulos_por_rol(
+        role=role,
+        allowed_modules=allowed_modules,
+    )
+
+    if not modules:
+        modules = ["amigo_imaginario"]
+
+    return modules
+
+
+# ------------------------------------------------------------
+# Renderizar aviso legal
+# ------------------------------------------------------------
+def render_aviso_legal() -> None:
+    """
+    Muestra el aviso legal del sistema.
+    """
+    st.markdown(
+        f"""
+        <div class="ethics-box">
+            <strong>Aviso de uso:</strong> {LEGAL_NOTICE_TEXT}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+# ------------------------------------------------------------
+# Refrescar tokens desde API si hay sesión compartida
+# ------------------------------------------------------------
+def refrescar_tokens_sesion() -> dict:
+    """
+    Actualiza el estado de tokens del usuario.
+
+    Si hay token de FastAPI, consulta /api/tokens/me.
+    Si no hay API, usa la base local.
+    """
+    user_id = st.session_state.get("user_id")
+    token = st.session_state.get("auth_token")
+
+    if not user_id:
+        return {}
+
+    try:
+        if token:
+            token_status = get_my_token_status(token)
+        else:
+            token_status = get_token_status(user_id)
+
+        st.session_state.token_status = token_status
+
+        if st.session_state.get("current_user"):
+            st.session_state.current_user["token_status"] = token_status
+
+        return token_status
+
+    except Exception:
+        return st.session_state.get("token_status", {}) or {}
+
+
+# ------------------------------------------------------------
+# Tarjeta visual de tokens
+# ------------------------------------------------------------
+def render_token_status_card() -> None:
+    """
+    Muestra tokens disponibles con advertencias amigables.
+    """
+    token_status = refrescar_tokens_sesion()
+
+    if not token_status:
+        return
+
+    if token_status.get("is_unlimited"):
+        st.markdown(
+            """
+            <div class="info-card">
+                <div class="info-title">Tokens</div>
+                <div class="info-text">Uso ilimitado para superadmin.</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        return
+
+    remaining = token_status.get("remaining_tokens", 0)
+    daily_limit = token_status.get("daily_limit", 0)
+    used_tokens = token_status.get("used_tokens", 0)
+    reset_text = token_status.get("reset_text", "próximo reinicio")
+
+    st.markdown(
+        f"""
+        <div class="info-card">
+            <div class="info-title">Tokens disponibles</div>
+            <div class="info-text">
+                Te quedan <strong>{remaining}</strong> de <strong>{daily_limit}</strong> tokens.<br>
+                Tokens usados en este periodo: {used_tokens}.<br>
+                Próximo reinicio: {reset_text}.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    if token_status.get("is_empty"):
+        st.error(
+            token_status.get(
+                "message",
+                "Por ahora ya no tienes tokens disponibles. Intenta de nuevo más tarde."
+            )
+        )
+    elif token_status.get("is_low"):
+        st.warning(
+            token_status.get(
+                "message",
+                "Te quedan pocos tokens disponibles. Úsalos con calma para lo más importante."
+            )
+        )
 
 # ------------------------------------------------------------
 # Sincronizar usuario actual a current_user
 # ------------------------------------------------------------
 def sync_current_user_session(usuario: dict) -> None:
     """
-    Guarda una representación simple del usuario autenticado
+    Guarda una representación completa del usuario autenticado
     para reutilizarla en la sesión compartida web / móvil.
     """
+    role = normalize_role(
+        usuario.get("role"),
+        bool(usuario.get("is_admin", False))
+    )
+
+    allowed_modules = asegurar_modulos_por_rol(
+        role=role,
+        allowed_modules=usuario.get("allowed_modules") or allowed_modules_for_role(role),
+    )
+
     st.session_state.current_user = {
         "id": usuario["id"],
         "username": usuario["username"],
         "display_name": usuario["display_name"],
-        "is_admin": bool(usuario.get("is_admin", False)),
+        "is_admin": role == "superadmin",
+        "role": role,
+        "role_label": usuario.get("role_label", role),
+        "account_type": usuario.get("account_type", "permanent"),
+        "guest_type": usuario.get("guest_type", ""),
+        "guest_status": usuario.get("guest_status", "none"),
+        "guest_expires_at": usuario.get("guest_expires_at", ""),
+        "is_active": bool(usuario.get("is_active", True)),
+        "allowed_modules": allowed_modules,
+        "permissions": usuario.get("permissions") or {},
+        "token_status": usuario.get("token_status") or {},
         "friend_name": usuario.get("friend_name", "Lumi"),
         "favorite_color": usuario.get("favorite_color", ""),
         "favorite_activity": usuario.get("favorite_activity", ""),
@@ -570,6 +866,15 @@ def sync_current_user_session(usuario: dict) -> None:
         "preferred_comfort": usuario.get("preferred_comfort", "cuentos"),
     }
 
+    # --------------------------------------------------------
+    # Guardar datos clave también directo en session_state
+    # para que la navegación los use sin depender del dict.
+    # --------------------------------------------------------
+    st.session_state.user_role = role
+    st.session_state.role_label = usuario.get("role_label", role)
+    st.session_state.allowed_modules = allowed_modules
+    st.session_state.permissions = usuario.get("permissions") or {}
+    st.session_state.token_status = usuario.get("token_status") or {}
 
 # ------------------------------------------------------------
 # Iniciar sesión
@@ -583,15 +888,31 @@ def iniciar_sesion(
     Guarda al usuario autenticado en session_state.
 
     Parámetros:
-        usuario (dict): usuario autenticado
-        auth_token (str | None): token JWT opcional de FastAPI
+        usuario (dict): usuario autenticado.
+        auth_token (str | None): token JWT opcional de FastAPI.
         reset_chat_state (bool): si True reinicia módulo/chat actual.
-                                 Si False conserva el estado actual.
     """
+    role = normalize_role(
+        usuario.get("role"),
+        bool(usuario.get("is_admin", False))
+    )
+
+    allowed_modules = asegurar_modulos_por_rol(
+        role=role,
+        allowed_modules=usuario.get("allowed_modules") or allowed_modules_for_role(role),
+    )
+
     st.session_state.user_id = usuario["id"]
     st.session_state.username = usuario["username"]
     st.session_state.display_name = usuario["display_name"]
-    st.session_state.is_admin = bool(usuario.get("is_admin", False))
+    st.session_state.is_admin = role == "superadmin"
+
+    st.session_state.user_role = role
+    st.session_state.role_label = usuario.get("role_label", role)
+    st.session_state.allowed_modules = allowed_modules
+    st.session_state.permissions = usuario.get("permissions") or {}
+    st.session_state.token_status = usuario.get("token_status") or {}
+
     st.session_state.friend_name = usuario.get("friend_name", "Lumi")
     st.session_state.friend_profile = {
         "favorite_color": usuario.get("favorite_color", ""),
@@ -618,28 +939,35 @@ def iniciar_sesion(
     st.session_state.friend_companion_message = "Estoy aquí contigo."
 
     # --------------------------------------------------------
-    # Solo reiniciar módulo/chat cuando sea login real.
-    # No hacerlo cuando solo se restaura sesión.
+    # Al iniciar, mandar al primer módulo permitido.
+    # Para superadmin puede iniciar en Amigo, pero ya tendrá Admin visible.
     # --------------------------------------------------------
     if reset_chat_state:
-        st.session_state.modulo_actual = "amigo_imaginario"
-        st.session_state.ultimo_modulo = "amigo_imaginario"
+        modulo_inicial = allowed_modules[0] if allowed_modules else "amigo_imaginario"
+
+        st.session_state.modulo_actual = modulo_inicial
+        st.session_state.ultimo_modulo = modulo_inicial
         st.session_state.conversation_id = None
         st.session_state.mensajes = []
         st.session_state.pending_message = None
-
 
 # ------------------------------------------------------------
 # Cerrar sesión
 # ------------------------------------------------------------
 def cerrar_sesion() -> None:
     """
-    Limpia el estado de autenticación y conversación.
+    Limpia el estado de autenticación, permisos y conversación.
     """
     st.session_state.user_id = None
     st.session_state.username = None
     st.session_state.display_name = None
     st.session_state.is_admin = False
+
+    st.session_state.user_role = "child"
+    st.session_state.role_label = "Usuario"
+    st.session_state.allowed_modules = []
+    st.session_state.permissions = {}
+    st.session_state.token_status = {}
 
     st.session_state.auth_token = None
     st.session_state.current_user = None
@@ -651,9 +979,11 @@ def cerrar_sesion() -> None:
         "encouragement_style": "",
         "preferred_comfort": "cuentos",
     }
+
     st.session_state.friend_avatar = dict(DEFAULT_FRIEND_AVATAR)
     st.session_state.friend_companion_state = "calma"
     st.session_state.friend_companion_message = "Estoy aquí contigo."
+
     st.session_state.modulo_actual = "amigo_imaginario"
     st.session_state.ultimo_modulo = "amigo_imaginario"
     st.session_state.conversation_id = None
@@ -661,7 +991,6 @@ def cerrar_sesion() -> None:
     st.session_state.pending_message = None
     st.session_state.selected_article_id = None
     st.session_state.admin_edit_article_id = None
-
 
 # ------------------------------------------------------------
 # Restaurar sesión desde token FastAPI
@@ -772,7 +1101,15 @@ def crear_y_cargar_nueva_conversacion(modulo: str, user_id: int) -> None:
     """
     Crea una conversación usando API compartida si existe token;
     si no, usa fallback local.
+
+    Nota:
+        admin_panel no debe crear conversaciones.
     """
+    if not es_modulo_chat(modulo):
+        st.session_state.conversation_id = None
+        st.session_state.mensajes = []
+        return
+
     if has_shared_api_session():
         token = st.session_state.get("auth_token")
 
@@ -786,6 +1123,7 @@ def crear_y_cargar_nueva_conversacion(modulo: str, user_id: int) -> None:
             st.session_state.modulo_actual = modulo
             st.session_state.ultimo_modulo = modulo
             cargar_conversacion(conversacion["id"], user_id)
+
         except Exception as error:
             st.error(f"No se pudo crear la conversación: {error}")
 
@@ -818,15 +1156,20 @@ def crear_y_cargar_nueva_conversacion(modulo: str, user_id: int) -> None:
             }
         ]
 
-
 # ------------------------------------------------------------
 # Asegurar conversación activa
 # ------------------------------------------------------------
 def asegurar_conversacion_activa(modulo: str, user_id: int) -> None:
     """
-    Garantiza que exista una conversación activa para el módulo.
-    Usa API si hay token; si no, usa fallback local.
+    Garantiza que exista una conversación activa para módulos de chat.
+
+    Administración no crea ni carga conversaciones.
     """
+    if not es_modulo_chat(modulo):
+        st.session_state.conversation_id = None
+        st.session_state.mensajes = []
+        return
+
     conversation_id = st.session_state.get("conversation_id")
 
     # --------------------------------------------------------
@@ -849,6 +1192,7 @@ def asegurar_conversacion_activa(modulo: str, user_id: int) -> None:
                 cargar_conversacion(conversaciones[0]["id"], user_id)
             else:
                 crear_y_cargar_nueva_conversacion(modulo, user_id)
+
         except Exception as error:
             st.error(f"No se pudo asegurar la conversación activa: {error}")
 
@@ -872,15 +1216,18 @@ def asegurar_conversacion_activa(modulo: str, user_id: int) -> None:
     else:
         crear_y_cargar_nueva_conversacion(modulo, user_id)
 
-
 # ------------------------------------------------------------
 # Obtener conversaciones del módulo
 # ------------------------------------------------------------
 def obtener_conversaciones_modulo(modulo: str, user_id: int) -> list[dict]:
     """
     Recupera conversaciones del módulo actual.
-    Usa API si hay token; si no, usa fallback local.
+
+    Administración no usa historial de conversaciones.
     """
+    if not es_modulo_chat(modulo):
+        return []
+
     if has_shared_api_session():
         token = st.session_state.get("auth_token")
 
@@ -898,7 +1245,6 @@ def obtener_conversaciones_modulo(modulo: str, user_id: int) -> list[dict]:
         module=modulo,
         limit=30
     )
-
 
 # ------------------------------------------------------------
 # Tarjeta estadística
@@ -2404,6 +2750,16 @@ def render_auth_screen() -> None:
         unsafe_allow_html=True
     )
 
+    st.markdown(
+        f"""
+        <div class="info-card">
+            <div class="info-title">Aviso de uso</div>
+            <div class="info-text">{LEGAL_NOTICE_TEXT}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
     col_info, col_auth = st.columns([1.05, 1.25], gap="large")
 
     with col_info:
@@ -2518,24 +2874,37 @@ def render_auth_screen() -> None:
 
 
 # ------------------------------------------------------------
-# Procesar mensaje del chat
+# Procesar mensaje de chat
 # ------------------------------------------------------------
-def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str) -> None:
+def procesar_mensaje_chat(
+    user_id: int,
+    modulo_actual: str,
+    mensaje_usuario: str
+) -> None:
     """
     Procesa un mensaje del usuario.
-    Usa API compartida si existe token; si no, usa fallback local.
+
+    Incluye:
+    - validación para no usar admin_panel como chat
+    - envío por API compartida cuando hay token
+    - fallback local
+    - control de tokens en modo local
     """
+    if not es_modulo_chat(modulo_actual):
+        st.error("Este módulo no utiliza chat.")
+        return
+
+    # --------------------------------------------------------
+    # Flujo con API compartida FastAPI
+    # Aquí el backend ya valida permisos, guests y tokens.
+    # --------------------------------------------------------
     if has_shared_api_session():
         token = st.session_state.get("auth_token")
-
-        if not st.session_state.conversation_id:
-            crear_y_cargar_nueva_conversacion(modulo_actual, user_id)
-
-        conversation_id = st.session_state.conversation_id
+        conversation_id = st.session_state.get("conversation_id")
 
         if not conversation_id:
-            st.error("No se pudo obtener una conversación activa.")
-            return
+            crear_y_cargar_nueva_conversacion(modulo_actual, user_id)
+            conversation_id = st.session_state.get("conversation_id")
 
         with st.chat_message("user"):
             st.markdown(mensaje_usuario)
@@ -2551,6 +2920,9 @@ def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str
 
                     user_message = result.get("user_message", {})
                     assistant_message = result.get("assistant_message", {})
+
+                    if result.get("token_status"):
+                        st.session_state.token_status = result["token_status"]
 
                     if not assistant_message.get("content", "").strip():
                         assistant_message["content"] = (
@@ -2577,16 +2949,19 @@ def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str
         })
 
         cargar_conversacion(conversation_id, user_id)
+        refrescar_tokens_sesion()
         st.rerun()
         return
 
     # --------------------------------------------------------
-    # Fallback local
+    # Fallback local con control de tokens
     # --------------------------------------------------------
     if not st.session_state.conversation_id:
         crear_y_cargar_nueva_conversacion(modulo_actual, user_id)
 
     conversation_id = st.session_state.conversation_id
+
+    puede_enviar, token_status = can_send_message_with_tokens(user_id)
 
     user_message_id = add_message(
         conversation_id=conversation_id,
@@ -2608,6 +2983,29 @@ def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str
 
     with st.chat_message("user"):
         st.markdown(mensaje_usuario)
+
+    if not puede_enviar:
+        respuesta = build_no_tokens_assistant_message(user_id)
+
+        with st.chat_message("assistant"):
+            st.markdown(respuesta)
+
+        assistant_message_id = add_message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content=respuesta
+        )
+
+        st.session_state.mensajes.append({
+            "id": assistant_message_id,
+            "role": "assistant",
+            "content": respuesta
+        })
+
+        refrescar_tokens_sesion()
+        cargar_conversacion(conversation_id, user_id)
+        st.rerun()
+        return
 
     with st.chat_message("assistant"):
         with st.spinner("Pensando..."):
@@ -2639,6 +3037,17 @@ def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str
 
         st.markdown(respuesta)
 
+    # --------------------------------------------------------
+    # Consumir token después de generar respuesta
+    # --------------------------------------------------------
+    consume_user_token(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        module=modulo_actual,
+        amount=1,
+        reason="chat_message",
+    )
+
     assistant_message_id = add_message(
         conversation_id=conversation_id,
         role="assistant",
@@ -2651,9 +3060,303 @@ def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str
         "content": respuesta
     })
 
+    refrescar_tokens_sesion()
     cargar_conversacion(conversation_id, user_id)
     st.rerun()
+# ------------------------------------------------------------
+# Panel de administración de roles, guests y tokens
+# ------------------------------------------------------------
+def render_access_control_admin_panel() -> None:
+    """
+    Panel principal para superadmin:
+    - usuarios
+    - roles
+    - cuentas guest
+    - tokens
+    - acceso al panel de biblioteca existente
+    """
+    token = st.session_state.get("auth_token")
 
+    if not token:
+        st.warning(
+            "Este panel requiere sesión compartida con FastAPI. "
+            "Cierra sesión e inicia con el formulario normal para obtener token."
+        )
+        return
+
+    st.markdown(
+        """
+        <div class="info-card">
+            <div class="info-title">Panel de administración</div>
+            <div class="info-text">
+                Administra usuarios, roles, cuentas guest, tokens y biblioteca.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    tab_usuarios, tab_guests, tab_crear_guest, tab_tokens, tab_biblioteca = st.tabs(
+        [
+            "Usuarios",
+            "Cuentas guest",
+            "Crear guest",
+            "Tokens",
+            "Biblioteca",
+        ]
+    )
+
+    # --------------------------------------------------------
+    # Usuarios y roles
+    # --------------------------------------------------------
+    with tab_usuarios:
+        st.subheader("Usuarios registrados")
+
+        try:
+            usuarios = admin_list_users(token)
+        except Exception as error:
+            st.error(f"No se pudieron cargar usuarios: {error}")
+            usuarios = []
+
+        if not usuarios:
+            st.info("No hay usuarios disponibles.")
+        else:
+            for usuario in usuarios:
+                with st.expander(
+                    f"{usuario.get('display_name')} · @{usuario.get('username')} · {usuario.get('role_label')}"
+                ):
+                    st.write(f"ID: {usuario.get('id')}")
+                    st.write(f"Tipo de cuenta: {usuario.get('account_type')}")
+                    st.write(f"Estado activo: {usuario.get('is_active')}")
+
+                    rol_actual = usuario.get("role", "child")
+
+                    opciones_roles = [
+                        "superadmin",
+                        "parent_admin",
+                        "child",
+                    ]
+
+                    rol_nuevo = st.selectbox(
+                        "Rol",
+                        opciones_roles,
+                        index=opciones_roles.index(rol_actual)
+                        if rol_actual in opciones_roles
+                        else 2,
+                        key=f"rol_usuario_{usuario.get('id')}",
+                    )
+
+                    if st.button(
+                        "Actualizar rol",
+                        key=f"btn_rol_usuario_{usuario.get('id')}"
+                    ):
+                        try:
+                            admin_update_user_role(
+                                token=token,
+                                user_id=usuario["id"],
+                                role=rol_nuevo,
+                            )
+                            st.success("Rol actualizado correctamente.")
+                            st.rerun()
+                        except Exception as error:
+                            st.error(f"No se pudo actualizar el rol: {error}")
+
+    # --------------------------------------------------------
+    # Cuentas guest
+    # --------------------------------------------------------
+    with tab_guests:
+        st.subheader("Cuentas guest temporales")
+
+        try:
+            guests = admin_list_guests(token)
+        except Exception as error:
+            st.error(f"No se pudieron cargar cuentas guest: {error}")
+            guests = []
+
+        if not guests:
+            st.info("Aún no hay cuentas guest.")
+        else:
+            for guest in guests:
+                with st.expander(
+                    f"{guest.get('display_name')} · @{guest.get('username')} · {guest.get('guest_status')}"
+                ):
+                    st.write(f"Tipo: {guest.get('role_label')}")
+                    st.write(f"Horas asignadas: {guest.get('guest_hours')}")
+                    st.write(f"Expira: {guest.get('guest_expires_at')}")
+                    st.write(f"Tiempo restante: {guest.get('remaining_guest_time')}")
+
+                    col_extender, col_desactivar = st.columns(2)
+
+                    with col_extender:
+                        horas_extra = st.number_input(
+                            "Horas extra",
+                            min_value=1,
+                            max_value=720,
+                            value=1,
+                            key=f"horas_extra_guest_{guest.get('id')}",
+                        )
+
+                        if st.button(
+                            "Extender acceso",
+                            key=f"btn_extender_guest_{guest.get('id')}"
+                        ):
+                            try:
+                                admin_extend_guest(
+                                    token=token,
+                                    user_id=guest["id"],
+                                    extra_hours=int(horas_extra),
+                                )
+                                st.success("Acceso extendido correctamente.")
+                                st.rerun()
+                            except Exception as error:
+                                st.error(f"No se pudo extender el acceso: {error}")
+
+                    with col_desactivar:
+                        st.write("")
+                        st.write("")
+
+                        if st.button(
+                            "Desactivar cuenta",
+                            key=f"btn_desactivar_guest_{guest.get('id')}"
+                        ):
+                            try:
+                                admin_deactivate_guest(
+                                    token=token,
+                                    user_id=guest["id"],
+                                )
+                                st.success("Cuenta guest desactivada.")
+                                st.rerun()
+                            except Exception as error:
+                                st.error(f"No se pudo desactivar la cuenta: {error}")
+
+    # --------------------------------------------------------
+    # Crear guest
+    # --------------------------------------------------------
+    with tab_crear_guest:
+        st.subheader("Crear cuenta guest")
+
+        with st.form("form_crear_guest"):
+            display_name = st.text_input("Nombre visible")
+            username = st.text_input("Usuario guest")
+            password = st.text_input("Contraseña", type="password")
+
+            guest_type = st.selectbox(
+                "Tipo de guest",
+                ["guest_child", "guest_parent"],
+                format_func=lambda value: "Guest niño" if value == "guest_child" else "Guest padre",
+            )
+
+            hours = st.number_input(
+                "Horas de acceso",
+                min_value=1,
+                max_value=720,
+                value=4,
+            )
+
+            token_limit = st.number_input(
+                "Tokens asignados",
+                min_value=0,
+                max_value=1000,
+                value=10,
+            )
+
+            crear = st.form_submit_button("Crear cuenta guest")
+
+        if crear:
+            try:
+                admin_create_guest(
+                    token=token,
+                    username=username,
+                    password=password,
+                    display_name=display_name,
+                    guest_type=guest_type,
+                    hours=int(hours),
+                    token_limit=int(token_limit),
+                )
+                st.success("Cuenta guest creada correctamente.")
+                st.rerun()
+            except Exception as error:
+                st.error(f"No se pudo crear la cuenta guest: {error}")
+
+    # --------------------------------------------------------
+    # Tokens
+    # --------------------------------------------------------
+    with tab_tokens:
+        st.subheader("Configuración de tokens")
+
+        try:
+            usuarios = admin_list_users(token)
+        except Exception as error:
+            st.error(f"No se pudieron cargar usuarios: {error}")
+            usuarios = []
+
+        if not usuarios:
+            st.info("No hay usuarios disponibles.")
+        else:
+            ids_usuarios = [usuario["id"] for usuario in usuarios]
+
+            usuario_id = st.selectbox(
+                "Selecciona usuario",
+                ids_usuarios,
+                format_func=lambda user_id: next(
+                    f"{usuario['display_name']} · @{usuario['username']} · {usuario['role_label']}"
+                    for usuario in usuarios
+                    if usuario["id"] == user_id
+                ),
+            )
+
+            usuario_actual = next(
+                usuario
+                for usuario in usuarios
+                if usuario["id"] == usuario_id
+            )
+
+            token_status = usuario_actual.get("token_status") or {}
+
+            with st.form(f"form_tokens_{usuario_id}"):
+                daily_limit = st.number_input(
+                    "Tokens por periodo",
+                    min_value=0,
+                    max_value=10000,
+                    value=int(token_status.get("daily_limit", 20)),
+                )
+
+                reset_interval_hours = st.number_input(
+                    "Reiniciar cada cuántas horas",
+                    min_value=1,
+                    max_value=720,
+                    value=int(token_status.get("reset_interval_hours", 24)),
+                )
+
+                low_threshold = st.number_input(
+                    "Advertir cuando queden",
+                    min_value=0,
+                    max_value=1000,
+                    value=int(token_status.get("low_threshold", 5)),
+                )
+
+                actualizar = st.form_submit_button("Actualizar tokens")
+
+            if actualizar:
+                try:
+                    admin_update_token_policy(
+                        token=token,
+                        user_id=usuario_id,
+                        daily_limit=int(daily_limit),
+                        reset_interval_hours=int(reset_interval_hours),
+                        low_threshold=int(low_threshold),
+                    )
+                    st.success("Tokens actualizados correctamente.")
+                    st.rerun()
+                except Exception as error:
+                    st.error(f"No se pudieron actualizar los tokens: {error}")
+
+    # --------------------------------------------------------
+    # Biblioteca existente
+    # --------------------------------------------------------
+    with tab_biblioteca:
+        st.subheader("Administración de biblioteca")
+        render_admin_panel()
 
 # ------------------------------------------------------------
 # Vista principal autenticada
@@ -2661,6 +3364,10 @@ def procesar_mensaje_chat(user_id: int, modulo_actual: str, mensaje_usuario: str
 def render_app() -> None:
     """
     Renderiza la aplicación principal una vez autenticado.
+
+    Corrección importante:
+        admin_panel se muestra como panel administrativo,
+        no como conversación.
     """
     user_id = st.session_state.user_id
     display_name = st.session_state.display_name
@@ -2668,24 +3375,62 @@ def render_app() -> None:
     is_admin = st.session_state.is_admin
     shared_api = has_shared_api_session()
 
-    asegurar_conversacion_activa(st.session_state.modulo_actual, user_id)
+    # --------------------------------------------------------
+    # Obtener módulos permitidos por rol
+    # --------------------------------------------------------
+    modulos_visibles = obtener_modulos_visibles_sesion()
+
+    if st.session_state.modulo_actual not in modulos_visibles:
+        st.session_state.modulo_actual = modulos_visibles[0]
+        st.session_state.ultimo_modulo = modulos_visibles[0]
+        st.session_state.conversation_id = None
+        st.session_state.mensajes = []
 
     modulo_actual = st.session_state.modulo_actual
-    info_modulo = MODULE_INFO[modulo_actual]
 
+    # --------------------------------------------------------
+    # Solo asegurar conversación si es módulo de chat
+    # --------------------------------------------------------
+    if es_modulo_chat(modulo_actual):
+        asegurar_conversacion_activa(modulo_actual, user_id)
+    else:
+        st.session_state.conversation_id = None
+        st.session_state.mensajes = []
+
+    info_modulo = MODULE_INFO[modulo_actual]
     conversaciones_modulo = obtener_conversaciones_modulo(modulo_actual, user_id)
 
+    # --------------------------------------------------------
+    # Sidebar
+    # --------------------------------------------------------
     with st.sidebar:
         st.subheader("Tu sesión")
         st.write(f"**{display_name}**")
 
-        rol_sidebar = "Administrador" if is_admin else "Usuario"
+        rol_sidebar = st.session_state.get("role_label") or (
+            "Administrador" if is_admin else "Usuario"
+        )
+
         st.caption(f"@{username} · {rol_sidebar}")
 
         if shared_api:
             st.caption("Modo compartido web / móvil")
         else:
             st.caption("Modo local de respaldo")
+
+        # ----------------------------------------------------
+        # Mostrar tokens en sidebar
+        # ----------------------------------------------------
+        token_status_sidebar = refrescar_tokens_sesion()
+
+        if token_status_sidebar:
+            if token_status_sidebar.get("is_unlimited"):
+                st.caption("Tokens: ilimitados")
+            else:
+                st.caption(
+                    f"Tokens: {token_status_sidebar.get('remaining_tokens', 0)}/"
+                    f"{token_status_sidebar.get('daily_limit', 0)}"
+                )
 
         if st.button("Cerrar sesión", width="stretch"):
             logout_everything()
@@ -2714,45 +3459,54 @@ def render_app() -> None:
 
         st.divider()
 
+        # ----------------------------------------------------
+        # Conversaciones solo para módulos de chat
+        # ----------------------------------------------------
         st.subheader("Conversaciones")
         st.caption(MODULE_LABELS[modulo_actual])
 
-        if st.button("Nuevo chat", width="stretch"):
-            crear_y_cargar_nueva_conversacion(modulo_actual, user_id)
-            st.rerun()
+        if es_modulo_chat(modulo_actual):
+            if st.button("Nuevo chat", width="stretch"):
+                crear_y_cargar_nueva_conversacion(modulo_actual, user_id)
+                st.rerun()
 
-        st.markdown(
-            '<div class="sidebar-note">Historial del usuario actual en este módulo</div>',
-            unsafe_allow_html=True
-        )
-        st.write("")
+            st.markdown(
+                '<div class="sidebar-note">Historial del usuario actual en este módulo</div>',
+                unsafe_allow_html=True
+            )
+            st.write("")
 
-        if not conversaciones_modulo:
-            st.info("Todavía no tienes conversaciones en este módulo.")
+            if not conversaciones_modulo:
+                st.info("Todavía no tienes conversaciones en este módulo.")
+            else:
+                for conversacion in conversaciones_modulo:
+                    titulo = conversacion.get("title", "Conversación")
+                    fecha = formatear_fecha(conversacion.get("updated_at", ""))
+                    texto_boton = f"{titulo}\n{fecha}"
+
+                    es_actual = conversacion.get("id") == st.session_state.conversation_id
+                    etiqueta = f"● {texto_boton}" if es_actual else texto_boton
+
+                    if st.button(
+                        etiqueta,
+                        key=f"conv_{conversacion.get('id')}",
+                        width="stretch"
+                    ):
+                        cargar_conversacion(conversacion.get("id"), user_id)
+                        st.rerun()
         else:
-            for conversacion in conversaciones_modulo:
-                titulo = conversacion.get("title", "Conversación")
-                fecha = formatear_fecha(conversacion.get("updated_at", ""))
-                texto_boton = f"{titulo}\n{fecha}"
+            st.info("Este módulo no usa conversaciones.")
 
-                es_actual = conversacion.get("id") == st.session_state.conversation_id
-                etiqueta = f"● {texto_boton}" if es_actual else texto_boton
-
-                if st.button(
-                    etiqueta,
-                    key=f"conv_{conversacion.get('id')}",
-                    width="stretch"
-                ):
-                    cargar_conversacion(conversacion.get("id"), user_id)
-                    st.rerun()
-
+    # --------------------------------------------------------
+    # Encabezado principal
+    # --------------------------------------------------------
     st.markdown(
         '<div class="main-title">Amigo Imaginario Neurodivergente</div>',
         unsafe_allow_html=True
     )
 
     st.markdown(
-        '<div class="main-subtitle">Fase 17 · Chat y biblioteca compartidos con fallback local</div>',
+        '<div class="main-subtitle">Fase 17 · Roles, guests, tokens y aviso legal</div>',
         unsafe_allow_html=True
     )
 
@@ -2761,13 +3515,21 @@ def render_app() -> None:
         <div class="hero-card">
             <div class="hero-title">Hola, {display_name}</div>
             <div class="hero-text">
-                Puedes seguir conversando y, si quieres, crear y personalizar a tu amigo imaginario con un avatar propio.
+                Tu navegación se ajusta automáticamente al rol de tu cuenta y al estado de tus tokens.
             </div>
         </div>
         """,
         unsafe_allow_html=True
     )
 
+    # --------------------------------------------------------
+    # Tokens visibles en dashboard
+    # --------------------------------------------------------
+    render_token_status_card()
+
+    # --------------------------------------------------------
+    # Estadísticas
+    # --------------------------------------------------------
     col_stat_1, col_stat_2, col_stat_3 = st.columns(3)
 
     with col_stat_1:
@@ -2778,11 +3540,18 @@ def render_app() -> None:
         )
 
     with col_stat_2:
-        render_stat_card(
-            "Chats en este módulo",
-            str(len(conversaciones_modulo)),
-            "Conversaciones guardadas para este usuario"
-        )
+        if es_modulo_chat(modulo_actual):
+            render_stat_card(
+                "Chats en este módulo",
+                str(len(conversaciones_modulo)),
+                "Conversaciones guardadas para este usuario"
+            )
+        else:
+            render_stat_card(
+                "Panel activo",
+                "Administración",
+                "Herramientas exclusivas del superadmin"
+            )
 
     with col_stat_3:
         if modulo_actual == "amigo_imaginario":
@@ -2799,24 +3568,33 @@ def render_app() -> None:
                 "Contenido actual de la biblioteca"
             )
 
+    # --------------------------------------------------------
+    # Selector de módulo filtrado por rol
+    # --------------------------------------------------------
     col_modulo, col_accion = st.columns([4, 1], gap="medium")
 
     with col_modulo:
         modulo_seleccionado = st.selectbox(
             "Selecciona un módulo",
-            options=list(MODULE_LABELS.keys()),
+            options=modulos_visibles,
             format_func=lambda clave: MODULE_LABELS[clave],
-            index=list(MODULE_LABELS.keys()).index(modulo_actual)
+            index=modulos_visibles.index(modulo_actual)
+            if modulo_actual in modulos_visibles
+            else 0
         )
 
     with col_accion:
         st.write("")
         st.write("")
-        if st.button("Nuevo chat", width="stretch"):
-            crear_y_cargar_nueva_conversacion(modulo_actual, user_id)
-            st.rerun()
 
-    if modulo_seleccionado != st.session_state.ultimo_modulo:
+        if es_modulo_chat(modulo_actual):
+            if st.button("Nuevo chat", width="stretch"):
+                crear_y_cargar_nueva_conversacion(modulo_actual, user_id)
+                st.rerun()
+        else:
+            st.button("Panel activo", disabled=True, width="stretch")
+
+    if modulo_seleccionado != st.session_state.modulo_actual:
         st.session_state.modulo_actual = modulo_seleccionado
         st.session_state.ultimo_modulo = modulo_seleccionado
         st.session_state.conversation_id = None
@@ -2826,7 +3604,9 @@ def render_app() -> None:
         if modulo_seleccionado != "biblioteca_inteligente":
             st.session_state.selected_article_id = None
 
-        asegurar_conversacion_activa(modulo_seleccionado, user_id)
+        if es_modulo_chat(modulo_seleccionado):
+            asegurar_conversacion_activa(modulo_seleccionado, user_id)
+
         st.rerun()
 
     modulo_actual = st.session_state.modulo_actual
@@ -2842,7 +3622,7 @@ def render_app() -> None:
         unsafe_allow_html=True
     )
 
-    if st.session_state.conversation_id:
+    if es_modulo_chat(modulo_actual) and st.session_state.conversation_id:
         st.caption(f"Chat actual: {st.session_state.conversation_id}")
 
     if not st.session_state.ui_focus_mode:
@@ -2863,12 +3643,21 @@ def render_app() -> None:
         st.markdown(chips_html, unsafe_allow_html=True)
 
     # --------------------------------------------------------
+    # Flujo: Administración
+    # --------------------------------------------------------
+    if modulo_actual == "admin_panel":
+        if not is_admin:
+            st.error("No tienes permiso para acceder al panel de administración.")
+        else:
+            render_access_control_admin_panel()
+
+    # --------------------------------------------------------
     # Flujo: Biblioteca Inteligente
     # --------------------------------------------------------
-    if modulo_actual == "biblioteca_inteligente":
+    elif modulo_actual == "biblioteca_inteligente":
         if is_admin:
             tab_chat, tab_biblioteca, tab_admin = st.tabs(
-                ["Chat educativo", "Biblioteca", "Administración"]
+                ["Chat educativo", "Biblioteca", "Administración de biblioteca"]
             )
         else:
             tab_chat, tab_biblioteca = st.tabs(
@@ -3064,7 +3853,7 @@ def render_app() -> None:
     # --------------------------------------------------------
     # Flujo: Modo Padres
     # --------------------------------------------------------
-    else:
+    elif modulo_actual == "modo_padres":
         mensaje_desde_ejemplo = None
 
         if not st.session_state.ui_focus_mode:
@@ -3117,50 +3906,86 @@ def render_app() -> None:
                 mensaje_usuario=mensaje_usuario
             )
 
+    else:
+        st.error("Módulo no reconocido o no permitido para tu cuenta.")
+
     st.divider()
-    st.markdown(
-        """
-        <div class="ethics-box">
-            Este sistema es un apoyo complementario y no sustituye atención,
-            diagnóstico ni seguimiento profesional.
-        </div>
-        """,
-        unsafe_allow_html=True
+    render_aviso_legal()
+
+# ============================================================
+# Arranque principal de la aplicación
+# Este bloque debe estar SIEMPRE al final de app.py.
+# Si no existe, Streamlit carga una pantalla en negro porque
+# solo define funciones, pero nunca renderiza la interfaz.
+# ============================================================
+
+try:
+    # --------------------------------------------------------
+    # Inicializar estado visual y variables de sesión
+    # --------------------------------------------------------
+    inicializar_estado()
+
+    # --------------------------------------------------------
+    # Aplicar estilos visuales de la app
+    # --------------------------------------------------------
+    aplicar_estilos()
+
+    # --------------------------------------------------------
+    # Inicializar base de datos local y migraciones
+    # --------------------------------------------------------
+    initialize_database()
+
+    # --------------------------------------------------------
+    # Validar configuración general del proyecto
+    # --------------------------------------------------------
+    errores_config = validar_configuracion()
+
+    if errores_config:
+        st.error("Hay un problema de configuración antes de iniciar la app.")
+
+        for error in errores_config:
+            st.write(f"- {error}")
+
+        st.info("Revisa tu archivo .env y vuelve a ejecutar la aplicación.")
+        st.stop()
+
+    # --------------------------------------------------------
+    # Restaurar sesión JWT compartida si existe
+    # --------------------------------------------------------
+    restore_api_session()
+
+    # --------------------------------------------------------
+    # Sincronizar login de Google si se usa ese método
+    # --------------------------------------------------------
+    sync_google_login_to_local_user()
+
+    # --------------------------------------------------------
+    # Normalizar módulo actual para evitar pantalla negra
+    # cuando quedó guardado un módulo viejo en session_state.
+    # --------------------------------------------------------
+    if "modulo_actual" not in st.session_state:
+        st.session_state.modulo_actual = "amigo_imaginario"
+
+    if "ultimo_modulo" not in st.session_state:
+        st.session_state.ultimo_modulo = st.session_state.modulo_actual
+
+    # --------------------------------------------------------
+    # Router principal
+    # --------------------------------------------------------
+    if st.session_state.get("user_id") is None:
+        render_auth_screen()
+    else:
+        render_app()
+
+# ------------------------------------------------------------
+# Mostrar errores directamente en pantalla
+# Esto evita que Streamlit se quede en negro sin explicar qué pasó.
+# ------------------------------------------------------------
+except Exception as error:
+    st.error("La app encontró un problema al cargar.")
+    st.exception(error)
+
+    st.info(
+        "Puedes limpiar la sesión abriendo esta URL: "
+        "http://localhost:8501/?reset=1"
     )
-
-
-# ------------------------------------------------------------
-# Inicialización general
-# ------------------------------------------------------------
-inicializar_estado()
-aplicar_estilos()
-initialize_database()
-
-errores_config = validar_configuracion()
-
-if errores_config:
-    st.error("Hay un problema de configuración antes de iniciar la app.")
-
-    for error in errores_config:
-        st.write(f"- {error}")
-
-    st.info("Revisa tu archivo .env y vuelve a ejecutar la aplicación.")
-    st.stop()
-
-# ------------------------------------------------------------
-# Intentar restaurar sesión JWT compartida
-# ------------------------------------------------------------
-restore_api_session()
-
-# ------------------------------------------------------------
-# Sincronizar login OIDC de Google con la sesión local
-# ------------------------------------------------------------
-sync_google_login_to_local_user()
-
-# ------------------------------------------------------------
-# Router principal
-# ------------------------------------------------------------
-if st.session_state.user_id is None:
-    render_auth_screen()
-else:
-    render_app()

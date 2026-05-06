@@ -1,10 +1,18 @@
 # ============================================================
 # mobile_backend/app/routers/chats.py
 # Endpoints de conversaciones y mensajes para la app móvil.
+# Incluye control de roles y consumo de tokens.
 # ============================================================
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from database.access_control import (
+    assert_module_access,
+    build_no_tokens_assistant_message,
+    can_send_message_with_tokens,
+    consume_user_token,
+    get_token_status,
+)
 from database.chat_db import (
     add_message,
     create_conversation,
@@ -19,6 +27,7 @@ from mobile_backend.app.schemas import (
     MessageOut,
     SendMessageRequest,
     SendMessageResponse,
+    TokenStatusOut,
 )
 from services.gemini_service import (
     generar_respuesta,
@@ -48,6 +57,22 @@ def build_friend_profile(current_user: dict) -> dict:
 
 
 # ------------------------------------------------------------
+# Validar acceso a módulo y convertir errores en HTTP
+# ------------------------------------------------------------
+def require_module_access(current_user: dict, module: str) -> None:
+    """
+    Verifica permisos de acceso al módulo solicitado.
+    """
+    try:
+        assert_module_access(current_user, module)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(error),
+        ) from error
+
+
+# ------------------------------------------------------------
 # Listar conversaciones por módulo
 # ------------------------------------------------------------
 @router.get("/{module}", response_model=list[ConversationOut])
@@ -58,6 +83,8 @@ def list_module_conversations(
     """
     Devuelve las conversaciones del usuario para un módulo.
     """
+    require_module_access(current_user, module)
+
     conversations = list_conversations_by_module(
         user_id=current_user["id"],
         module=module,
@@ -78,6 +105,8 @@ def create_module_conversation(
     """
     Crea una conversación vacía para un módulo.
     """
+    require_module_access(current_user, module)
+
     conversation_id = create_conversation(
         user_id=current_user["id"],
         module=module
@@ -119,6 +148,8 @@ def get_conversation_messages(
             detail="Conversación no encontrada."
         )
 
+    require_module_access(current_user, conversation["module"])
+
     messages = get_messages_by_conversation(
         conversation_id=conversation_id,
         user_id=current_user["id"]
@@ -137,7 +168,7 @@ def send_message_to_conversation(
     current_user: dict = Depends(get_current_user),
 ) -> SendMessageResponse:
     """
-    Guarda el mensaje del usuario, genera la respuesta de la IA
+    Guarda el mensaje del usuario, valida tokens, genera respuesta de IA
     y devuelve ambos mensajes.
     """
     conversation = get_conversation_by_id(
@@ -150,6 +181,13 @@ def send_message_to_conversation(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Conversación no encontrada."
         )
+
+    require_module_access(current_user, conversation["module"])
+
+    # --------------------------------------------------------
+    # Validar tokens antes de llamar al modelo
+    # --------------------------------------------------------
+    can_send, token_status = can_send_message_with_tokens(current_user["id"])
 
     # --------------------------------------------------------
     # Guardar mensaje del usuario
@@ -165,6 +203,27 @@ def send_message_to_conversation(
         user_id=current_user["id"],
         user_message=payload.content
     )
+
+    if not can_send:
+        assistant_message_id = add_message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content=build_no_tokens_assistant_message(current_user["id"]),
+        )
+
+        updated_messages = get_messages_by_conversation(
+            conversation_id=conversation_id,
+            user_id=current_user["id"]
+        )
+
+        user_message = next(message for message in updated_messages if message["id"] == user_message_id)
+        assistant_message = next(message for message in updated_messages if message["id"] == assistant_message_id)
+
+        return SendMessageResponse(
+            user_message=MessageOut(**user_message),
+            assistant_message=MessageOut(**assistant_message),
+            token_status=TokenStatusOut(**get_token_status(current_user["id"])),
+        )
 
     # --------------------------------------------------------
     # Reconstruir historial actual para generar respuesta
@@ -185,17 +244,39 @@ def send_message_to_conversation(
     # --------------------------------------------------------
     # Seleccionar generador según módulo
     # --------------------------------------------------------
-    if conversation["module"] == "biblioteca_inteligente":
-        assistant_content = generar_respuesta_biblioteca_rag(
-            mensajes=mensajes_prompt
+    try:
+        if conversation["module"] == "biblioteca_inteligente":
+            assistant_content = generar_respuesta_biblioteca_rag(
+                mensajes=mensajes_prompt
+            )
+        else:
+            assistant_content = generar_respuesta(
+                modulo=conversation["module"],
+                mensajes=mensajes_prompt,
+                friend_name=current_user.get("friend_name", "Lumi") or "Lumi",
+                friend_profile=build_friend_profile(current_user),
+            )
+    except RuntimeError:
+        assistant_content = (
+            "No pude generar una respuesta en este momento. "
+            "Revisa que la API key de Gemini esté vigente y configurada correctamente."
         )
-    else:
-        assistant_content = generar_respuesta(
-            modulo=conversation["module"],
-            mensajes=mensajes_prompt,
-            friend_name=current_user.get("friend_name", "Lumi") or "Lumi",
-            friend_profile=build_friend_profile(current_user),
+    except Exception:
+        assistant_content = (
+            "Ocurrió un problema al generar la respuesta. "
+            "Intenta nuevamente o revisa la consola del backend."
         )
+
+    # --------------------------------------------------------
+    # Consumir token solo después de tener respuesta controlada
+    # --------------------------------------------------------
+    token_status = consume_user_token(
+        user_id=current_user["id"],
+        conversation_id=conversation_id,
+        module=conversation["module"],
+        amount=1,
+        reason="chat_message",
+    )
 
     # --------------------------------------------------------
     # Guardar respuesta de la IA
@@ -224,4 +305,5 @@ def send_message_to_conversation(
     return SendMessageResponse(
         user_message=MessageOut(**user_message),
         assistant_message=MessageOut(**assistant_message),
+        token_status=TokenStatusOut(**token_status),
     )

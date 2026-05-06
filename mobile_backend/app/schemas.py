@@ -1,9 +1,45 @@
 # ============================================================
 # mobile_backend/app/schemas.py
 # Esquemas Pydantic usados por el backend móvil.
+# Incluye roles, guests, tokens y aviso legal.
 # ============================================================
 
+from typing import Any
+
 from pydantic import BaseModel, Field
+
+
+# ------------------------------------------------------------
+# Estado de tokens devuelto por la API
+# ------------------------------------------------------------
+class TokenStatusOut(BaseModel):
+    daily_limit: int
+    remaining_tokens: int
+    used_tokens: int
+    low_threshold: int
+    reset_interval_hours: int
+    last_reset_at: str = ""
+    next_reset_at: str = ""
+    is_low: bool = False
+    is_empty: bool = False
+    is_unlimited: bool = False
+    message: str = ""
+    reset_text: str = ""
+
+
+# ------------------------------------------------------------
+# Permisos simples para navegación web/móvil
+# ------------------------------------------------------------
+class PermissionsOut(BaseModel):
+    can_access_amigo: bool = False
+    can_access_biblioteca: bool = False
+    can_access_modo_padres: bool = False
+    can_access_admin: bool = False
+    can_manage_users: bool = False
+    can_manage_guests: bool = False
+    can_manage_library: bool = False
+    can_customize_child_friend: bool = False
+    can_view_tokens: bool = True
 
 
 # ------------------------------------------------------------
@@ -19,6 +55,21 @@ class UserOut(BaseModel):
     favorite_activity: str = ""
     encouragement_style: str = ""
     preferred_comfort: str = "cuentos"
+
+    # --------------------------------------------------------
+    # Campos nuevos de roles / guest / permisos
+    # --------------------------------------------------------
+    role: str = "child"
+    role_label: str = "Usuario niño"
+    account_type: str = "permanent"
+    guest_type: str = ""
+    guest_status: str = "none"
+    guest_hours: int = 0
+    guest_expires_at: str = ""
+    is_active: bool = True
+    permissions: PermissionsOut = Field(default_factory=PermissionsOut)
+    allowed_modules: list[str] = Field(default_factory=list)
+    token_status: TokenStatusOut | None = None
 
 
 # ------------------------------------------------------------
@@ -121,6 +172,7 @@ class SendMessageRequest(BaseModel):
 class SendMessageResponse(BaseModel):
     user_message: MessageOut
     assistant_message: MessageOut
+    token_status: TokenStatusOut | None = None
 
 
 # ------------------------------------------------------------
@@ -151,3 +203,46 @@ class SendArticleToChatResponse(BaseModel):
     conversation_id: int
     module: str
     title: str
+
+
+# ============================================================
+# Esquemas de administración
+# ============================================================
+
+class RoleUpdateRequest(BaseModel):
+    role: str = Field(max_length=30)
+
+
+class CreateGuestRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=50)
+    password: str = Field(min_length=8, max_length=200)
+    display_name: str = Field(default="", max_length=100)
+    guest_type: str = Field(default="guest_child", max_length=30)
+    hours: int = Field(default=4, ge=1, le=720)
+    token_limit: int = Field(default=10, ge=0, le=1000)
+
+
+class ExtendGuestRequest(BaseModel):
+    extra_hours: int = Field(default=1, ge=1, le=720)
+
+
+class TokenPolicyRequest(BaseModel):
+    daily_limit: int = Field(default=20, ge=0, le=10000)
+    reset_interval_hours: int = Field(default=24, ge=1, le=720)
+    low_threshold: int = Field(default=5, ge=0, le=1000)
+
+
+class AdminUserOut(UserOut):
+    guest_created_by: int | None = None
+    remaining_guest_time: str = ""
+
+
+class LegalNoticeOut(BaseModel):
+    text: str
+    version: str = "2026-05-06"
+
+
+class GenericMessageOut(BaseModel):
+    ok: bool = True
+    message: str
+    data: dict[str, Any] | None = None

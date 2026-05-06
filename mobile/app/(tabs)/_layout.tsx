@@ -1,4 +1,8 @@
-// Layout protegido por sesión para las tabs
+// ============================================================
+// mobile/app/(tabs)/_layout.tsx
+// Layout protegido por sesión con navegación según rol.
+// ============================================================
+
 import React from "react";
 import { Redirect, Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -6,11 +10,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/lib/auth";
 
 export default function TabsLayout() {
-  const { token, isLoading } = useAuth();
+  const { token, isLoading, user } = useAuth();
 
   if (!isLoading && !token) {
     return <Redirect href="/(auth)/login" />;
   }
+
+  const permissions = user?.permissions;
 
   return (
     <Tabs
@@ -34,6 +40,7 @@ export default function TabsLayout() {
         name="amigo"
         options={{
           title: "Amigo",
+          href: permissions?.can_access_amigo === false ? null : undefined,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="chatbubble-ellipses" color={color} size={size} />
           ),
@@ -44,6 +51,7 @@ export default function TabsLayout() {
         name="biblioteca"
         options={{
           title: "Biblioteca",
+          href: permissions?.can_access_biblioteca ? undefined : null,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="library" color={color} size={size} />
           ),
@@ -54,6 +62,7 @@ export default function TabsLayout() {
         name="padres"
         options={{
           title: "Padres",
+          href: permissions?.can_access_modo_padres ? undefined : null,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="people" color={color} size={size} />
           ),

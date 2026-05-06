@@ -9,6 +9,8 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from database.access_control import assert_module_access
+
 from database.chat_db import (
     add_article_to_favorites,
     add_message,
@@ -33,6 +35,39 @@ from mobile_backend.app.schemas import (
 from services.gemini_service import generar_respuesta
 
 router = APIRouter(prefix="/api/library", tags=["library"])
+
+
+# ------------------------------------------------------------
+# Validar acceso a biblioteca
+# ------------------------------------------------------------
+def require_library_access(current_user: dict) -> None:
+    """
+    Por esta fase, la biblioteca queda disponible para superadmin.
+    La edición sigue estando en el panel web/admin.
+    """
+    try:
+        assert_module_access(current_user, "biblioteca_inteligente")
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(error),
+        ) from error
+
+
+# ------------------------------------------------------------
+# Validar acceso al chat amigo cuando se manda un artículo
+# ------------------------------------------------------------
+def require_amigo_access(current_user: dict) -> None:
+    """
+    Evita que roles sin permiso a Amigo Imaginario usen send-to-chat.
+    """
+    try:
+        assert_module_access(current_user, "amigo_imaginario")
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(error),
+        ) from error
 
 
 # ------------------------------------------------------------
@@ -94,6 +129,8 @@ def list_articles(
     reader_type: str = Query(default="Todos"),
     current_user: dict = Depends(get_current_user),
 ) -> list[ArticleOut]:
+    require_library_access(current_user)
+
     articles = search_articles(
         search_text=search,
         category=category,
@@ -112,6 +149,8 @@ def get_article(
     article_id: int,
     current_user: dict = Depends(get_current_user),
 ) -> ArticleOut:
+    require_library_access(current_user)
+
     article = get_article_by_id(article_id)
 
     if not article:
@@ -130,6 +169,8 @@ def get_article(
 def get_favorites(
     current_user: dict = Depends(get_current_user),
 ) -> list[ArticleOut]:
+    require_library_access(current_user)
+
     articles = list_favorite_articles(current_user["id"])
     return [build_article_out(article) for article in articles]
 
@@ -142,6 +183,8 @@ def add_favorite(
     article_id: int,
     current_user: dict = Depends(get_current_user),
 ) -> FavoriteStateOut:
+    require_library_access(current_user)
+
     try:
         add_article_to_favorites(current_user["id"], article_id)
     except ValueError as error:
@@ -164,6 +207,8 @@ def remove_favorite(
     article_id: int,
     current_user: dict = Depends(get_current_user),
 ) -> FavoriteStateOut:
+    require_library_access(current_user)
+
     remove_article_from_favorites(current_user["id"], article_id)
 
     return FavoriteStateOut(
@@ -180,6 +225,9 @@ def send_article_to_chat(
     article_id: int,
     current_user: dict = Depends(get_current_user),
 ) -> SendArticleToChatResponse:
+    require_library_access(current_user)
+    require_amigo_access(current_user)
+
     article = get_article_by_id(article_id)
 
     if not article:

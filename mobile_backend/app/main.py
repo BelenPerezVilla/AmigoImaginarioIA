@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from database.chat_db import initialize_database
 from mobile_backend.app.core.config import ALLOWED_ORIGINS
-from mobile_backend.app.routers import auth, chats, library
+from mobile_backend.app.routers import admin, auth, chats, library, tokens
 
 # ------------------------------------------------------------
 # Crear aplicación FastAPI
@@ -41,6 +41,8 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(chats.router)
 app.include_router(library.router)
+app.include_router(tokens.router)
+app.include_router(admin.router)
 
 
 # ------------------------------------------------------------

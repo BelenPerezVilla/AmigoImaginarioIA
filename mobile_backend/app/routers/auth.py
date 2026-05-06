@@ -5,6 +5,10 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from database.access_control import (
+    LEGAL_NOTICE_TEXT,
+    decorate_user_for_access,
+)
 from database.chat_db import (
     authenticate_user,
     create_user,
@@ -23,6 +27,7 @@ from mobile_backend.app.schemas import (
     RegisterRequest,
     UpdateFriendPreferencesRequest,
     UpdateImaginaryFriendAvatarRequest,
+    LegalNoticeOut,
     UserOut,
 )
 
@@ -33,16 +38,32 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 # Convertir dict de usuario a esquema UserOut
 # ------------------------------------------------------------
 def build_user_out(user: dict) -> UserOut:
+    """
+    Convierte usuario legacy/nuevo a UserOut con permisos y tokens.
+    """
+    user = decorate_user_for_access(user) or user
+
     return UserOut(
         id=user["id"],
         username=user["username"],
         display_name=user["display_name"],
-        is_admin=bool(user["is_admin"]),
+        is_admin=bool(user.get("is_admin", False)),
         friend_name=user.get("friend_name", "Lumi") or "Lumi",
         favorite_color=user.get("favorite_color", "") or "",
         favorite_activity=user.get("favorite_activity", "") or "",
         encouragement_style=user.get("encouragement_style", "") or "",
         preferred_comfort=user.get("preferred_comfort", "cuentos") or "cuentos",
+        role=user.get("role", "child") or "child",
+        role_label=user.get("role_label", "Usuario niño") or "Usuario niño",
+        account_type=user.get("account_type", "permanent") or "permanent",
+        guest_type=user.get("guest_type", "") or "",
+        guest_status=user.get("guest_status", "none") or "none",
+        guest_hours=int(user.get("guest_hours") or 0),
+        guest_expires_at=user.get("guest_expires_at", "") or "",
+        is_active=bool(user.get("is_active", True)),
+        permissions=user.get("permissions") or {},
+        allowed_modules=user.get("allowed_modules") or [],
+        token_status=user.get("token_status"),
     )
 
 
@@ -92,7 +113,13 @@ def register(payload: RegisterRequest) -> AuthResponse:
 # ------------------------------------------------------------
 @router.post("/login", response_model=AuthResponse)
 def login(payload: LoginRequest) -> AuthResponse:
-    user = authenticate_user(payload.username, payload.password)
+    try:
+        user = authenticate_user(payload.username, payload.password)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(error),
+        ) from error
 
     if not user:
         raise HTTPException(
@@ -122,6 +149,14 @@ def me(current_user: dict = Depends(get_current_user)) -> UserOut:
         )
 
     return build_user_out(fresh_user)
+
+
+# ------------------------------------------------------------
+# Aviso legal vigente
+# ------------------------------------------------------------
+@router.get("/legal-notice", response_model=LegalNoticeOut)
+def legal_notice() -> LegalNoticeOut:
+    return LegalNoticeOut(text=LEGAL_NOTICE_TEXT)
 
 
 # ------------------------------------------------------------

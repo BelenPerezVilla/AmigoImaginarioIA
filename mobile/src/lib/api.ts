@@ -1,6 +1,7 @@
 // ============================================================
 // src/lib/api.ts
 // Cliente de API para la app móvil.
+// Incluye roles, permisos, guests, tokens y aviso legal.
 // ============================================================
 
 import { Platform } from "react-native";
@@ -21,6 +22,44 @@ export const API_BASE_URL =
     : `http://${DEV_MACHINE_IP}:8000`;
 
 // ------------------------------------------------------------
+// Timeout general para Gemini y FastAPI.
+// ------------------------------------------------------------
+const API_TIMEOUT_MS = 60000;
+
+// ------------------------------------------------------------
+// Tipos de tokens
+// ------------------------------------------------------------
+export type TokenStatus = {
+  daily_limit: number;
+  remaining_tokens: number;
+  used_tokens: number;
+  low_threshold: number;
+  reset_interval_hours: number;
+  last_reset_at: string;
+  next_reset_at: string;
+  is_low: boolean;
+  is_empty: boolean;
+  is_unlimited: boolean;
+  message: string;
+  reset_text: string;
+};
+
+// ------------------------------------------------------------
+// Tipos de permisos
+// ------------------------------------------------------------
+export type UserPermissions = {
+  can_access_amigo: boolean;
+  can_access_biblioteca: boolean;
+  can_access_modo_padres: boolean;
+  can_access_admin: boolean;
+  can_manage_users: boolean;
+  can_manage_guests: boolean;
+  can_manage_library: boolean;
+  can_customize_child_friend: boolean;
+  can_view_tokens: boolean;
+};
+
+// ------------------------------------------------------------
 // Tipos base
 // ------------------------------------------------------------
 export type AppUser = {
@@ -33,6 +72,17 @@ export type AppUser = {
   favorite_activity: string;
   encouragement_style: string;
   preferred_comfort: string;
+  role: string;
+  role_label: string;
+  account_type: string;
+  guest_type: string;
+  guest_status: string;
+  guest_hours: number;
+  guest_expires_at: string;
+  is_active: boolean;
+  permissions: UserPermissions;
+  allowed_modules: string[];
+  token_status?: TokenStatus | null;
 };
 
 export type ImaginaryFriendAvatar = {
@@ -71,6 +121,7 @@ export type Message = {
 export type SendMessageResponse = {
   user_message: Message;
   assistant_message: Message;
+  token_status?: TokenStatus | null;
 };
 
 export type Article = {
@@ -113,6 +164,11 @@ export type SendArticleToChatResponse = {
   title: string;
 };
 
+export type LegalNoticeResponse = {
+  text: string;
+  version: string;
+};
+
 // ------------------------------------------------------------
 // Construir headers para peticiones
 // ------------------------------------------------------------
@@ -136,7 +192,7 @@ function buildHeaders(token?: string, isJson: boolean = true): HeadersInit {
 async function fetchWithTimeout(
   url: string,
   options: RequestInit,
-  timeoutMs: number = 12000
+  timeoutMs: number = API_TIMEOUT_MS
 ): Promise<Response> {
   const controller = new AbortController();
 
@@ -176,7 +232,7 @@ async function apiRequest<T>(
           ...(options.headers || {}),
         },
       },
-      12000
+      API_TIMEOUT_MS
     );
 
     let data: any = null;
@@ -202,7 +258,7 @@ async function apiRequest<T>(
   } catch (error: any) {
     if (error?.name === "AbortError") {
       throw new Error(
-        "La petición tardó demasiado. Revisa que el backend esté encendido y que la IP sea correcta."
+        "La petición tardó demasiado. Revisa que el backend esté encendido, que Gemini responda y que la IP sea correcta."
       );
     }
 
@@ -261,6 +317,12 @@ export async function getCurrentUser(token: string): Promise<AppUser> {
   );
 }
 
+export async function getLegalNoticeRequest(): Promise<LegalNoticeResponse> {
+  return apiRequest<LegalNoticeResponse>("/api/auth/legal-notice", {
+    method: "GET",
+  });
+}
+
 export async function updateFriendPreferencesRequest(
   token: string,
   payload: UpdateFriendPreferencesPayload
@@ -276,6 +338,22 @@ export async function updateFriendPreferencesRequest(
         encouragement_style: payload.encouragement_style.trim(),
         preferred_comfort: payload.preferred_comfort.trim().toLowerCase(),
       }),
+    },
+    token
+  );
+}
+
+// ============================================================
+// TOKENS
+// ============================================================
+
+export async function getMyTokenStatusRequest(
+  token: string
+): Promise<TokenStatus> {
+  return apiRequest<TokenStatus>(
+    "/api/tokens/me",
+    {
+      method: "GET",
     },
     token
   );

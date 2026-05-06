@@ -27,8 +27,10 @@ import { Ionicons } from "@expo/vector-icons";
 import {
   type Conversation,
   type Message,
+  type TokenStatus,
   createConversationRequest,
   getConversationMessages,
+  getMyTokenStatusRequest,
   listConversations,
   sendMessageRequest,
 } from "../lib/api";
@@ -70,6 +72,9 @@ export default function ChatModuleScreen({
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [tokenStatus, setTokenStatus] = useState<TokenStatus | null>(
+    user?.token_status || null
+  );
 
   const scrollRef = useRef<ScrollView>(null);
   const floatAnim = useRef(new Animated.Value(0)).current;
@@ -161,6 +166,9 @@ export default function ChatModuleScreen({
   const bootstrap = async () => {
     try {
       setLoading(true);
+
+      const status = await getMyTokenStatusRequest(token);
+      setTokenStatus(status);
 
       const fetched = await listConversations(module, token);
       setConversations(fetched);
@@ -260,6 +268,14 @@ export default function ChatModuleScreen({
       return;
     }
 
+    if (tokenStatus?.is_empty && !tokenStatus.is_unlimited) {
+      Alert.alert(
+        "Tokens agotados",
+        tokenStatus.message || "Por ahora no tienes tokens disponibles. Revisa cuándo se reinician."
+      );
+      return;
+    }
+
     try {
       setSending(true);
 
@@ -277,6 +293,10 @@ export default function ChatModuleScreen({
       setMessages((prev) => [...prev, tempUserMessage]);
 
       const result = await sendMessageRequest(selectedConversationId, content, token);
+
+      if (result.token_status) {
+        setTokenStatus(result.token_status);
+      }
 
       setMessages((prev) => [
         ...prev.filter((message) => message.id !== tempUserMessage.id),
@@ -335,6 +355,37 @@ export default function ChatModuleScreen({
           </Pressable>
         </View>
 
+        {tokenStatus && !tokenStatus.is_unlimited && (
+          <View
+            style={[
+              styles.tokenCard,
+              tokenStatus.is_empty
+                ? styles.tokenCardEmpty
+                : tokenStatus.is_low
+                ? styles.tokenCardLow
+                : styles.tokenCardOk,
+            ]}
+          >
+            <Ionicons
+              name={tokenStatus.is_empty ? "pause-circle" : "flash"}
+              size={18}
+              color={tokenStatus.is_empty ? "#991b1b" : tokenStatus.is_low ? "#92400e" : "#1e3a8a"}
+            />
+            <View style={styles.tokenTextBlock}>
+              <Text style={styles.tokenTitle}>
+                Tokens: {tokenStatus.remaining_tokens} de {tokenStatus.daily_limit}
+              </Text>
+              <Text style={styles.tokenText}>
+                {tokenStatus.is_empty
+                  ? tokenStatus.message
+                  : tokenStatus.is_low
+                  ? tokenStatus.message
+                  : `Se reinician en ${tokenStatus.reset_text}.`}
+              </Text>
+            </View>
+          </View>
+        )}
+
         {visibleExamples.length > 0 && (
           <ScrollView
             horizontal
@@ -353,6 +404,7 @@ export default function ChatModuleScreen({
                   },
                 ]}
                 onPress={() => handleSend(example)}
+                disabled={Boolean(tokenStatus?.is_empty && !tokenStatus.is_unlimited) || sending}
               >
                 <Text
                   style={[
@@ -502,10 +554,15 @@ export default function ChatModuleScreen({
           <TextInput
             value={input}
             onChangeText={setInput}
-            placeholder={placeholder}
+            placeholder={
+              tokenStatus?.is_empty && !tokenStatus.is_unlimited
+                ? "Tus tokens se reiniciarán pronto..."
+                : placeholder
+            }
             placeholderTextColor="#8a94a6"
             style={styles.input}
             multiline
+            editable={!sending && !(tokenStatus?.is_empty && !tokenStatus.is_unlimited)}
           />
 
           <View style={styles.inputFooter}>
@@ -519,10 +576,11 @@ export default function ChatModuleScreen({
               style={[
                 styles.sendButton,
                 { backgroundColor: theme.accent },
-                sending && styles.sendButtonDisabled,
+                (sending || (tokenStatus?.is_empty && !tokenStatus.is_unlimited)) &&
+                  styles.sendButtonDisabled,
               ]}
               onPress={() => handleSend()}
-              disabled={sending}
+              disabled={sending || Boolean(tokenStatus?.is_empty && !tokenStatus.is_unlimited)}
             >
               <Ionicons name="send" size={16} color="#ffffff" />
               <Text style={styles.sendButtonText}>Enviar</Text>
@@ -557,6 +615,41 @@ const styles = StyleSheet.create({
     marginTop: 12,
     color: "#526075",
     fontSize: 15,
+  },
+  tokenCard: {
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 10,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    borderWidth: 1,
+  },
+  tokenCardOk: {
+    backgroundColor: "#dbeafe",
+    borderColor: "#bfdbfe",
+  },
+  tokenCardLow: {
+    backgroundColor: "#fef3c7",
+    borderColor: "#fde68a",
+  },
+  tokenCardEmpty: {
+    backgroundColor: "#fee2e2",
+    borderColor: "#fecaca",
+  },
+  tokenTextBlock: {
+    flex: 1,
+  },
+  tokenTitle: {
+    fontWeight: "800",
+    color: "#0f172a",
+    fontSize: 13,
+  },
+  tokenText: {
+    marginTop: 3,
+    color: "#475569",
+    fontSize: 12,
+    lineHeight: 17,
   },
   headerCard: {
     backgroundColor: "#ffffff",

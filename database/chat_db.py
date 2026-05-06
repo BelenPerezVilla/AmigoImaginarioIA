@@ -388,6 +388,13 @@ def initialize_database() -> None:
 
     connection.close()
 
+    # --------------------------------------------------------
+    # Migración de roles, guests y tokens
+    # --------------------------------------------------------
+    from database.access_control import initialize_access_control_schema
+
+    initialize_access_control_schema()
+
 
 # ------------------------------------------------------------
 # Sembrar artículos base
@@ -748,7 +755,7 @@ def get_user_by_username(username: str) -> Optional[dict]:
     if not row:
         return None
 
-    return {
+    user = {
         "id": row["id"],
         "username": row["username"],
         "display_name": row["display_name"],
@@ -760,6 +767,20 @@ def get_user_by_username(username: str) -> Optional[dict]:
         "preferred_comfort": row["preferred_comfort"] or "cuentos",
         "created_at": row["created_at"]
     }
+
+    # --------------------------------------------------------
+    # Validar cuenta activa / guest vigente y decorar con rol.
+    # --------------------------------------------------------
+    from database.access_control import (
+        decorate_user_for_access,
+        mark_user_login,
+        validate_user_can_login,
+    )
+
+    validate_user_can_login(user["id"])
+    mark_user_login(user["id"])
+
+    return decorate_user_for_access(user)
 
 # ------------------------------------------------------------
 # Obtener usuario por id
@@ -891,6 +912,23 @@ def create_user(username: str, password: str, display_name: str = "") -> dict:
     ))
 
     user_id = cursor.lastrowid
+
+    # --------------------------------------------------------
+    # Compatibilidad con el nuevo control de roles.
+    # El primer usuario sigue siendo superadmin.
+    # --------------------------------------------------------
+    try:
+        cursor.execute("""
+            UPDATE users
+            SET role = ?,
+                account_type = 'permanent',
+                guest_status = 'none',
+                is_active = 1
+            WHERE id = ?;
+        """, ("superadmin" if is_admin else "child", user_id))
+    except sqlite3.OperationalError:
+        # Si la migración aún no existe, se aplicará al iniciar la app.
+        pass
 
     connection.commit()
     connection.close()
