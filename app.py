@@ -120,6 +120,28 @@ from database.chat_db import (
 )
 
 # ------------------------------------------------------------
+# Funciones de seguimiento y apoyo a padres
+# ------------------------------------------------------------
+from database.support_db import (
+    add_support_reply,
+    create_support_contact,
+    create_support_request,
+    deactivate_support_contact,
+    get_child_activity_summary,
+    initialize_support_schema,
+    link_parent_child,
+    list_children_for_parent,
+    list_recommended_contacts_for_request,
+    list_support_contacts,
+    list_support_replies,
+    list_support_requests_for_parent,
+    list_support_requests_for_superadmin,
+    recommend_contact_for_request,
+    unlink_parent_child,
+    update_support_request_status,
+)
+
+# ------------------------------------------------------------
 # Configuración visual, prompts y ayudas del amigo imaginario
 # ------------------------------------------------------------
 from prompts import (
@@ -651,6 +673,7 @@ def asegurar_modulos_por_rol(role: str, allowed_modules: list[str] | None) -> li
         modules.append("admin_panel")
 
     return modules
+
 # ------------------------------------------------------------
 # Verificar si un módulo funciona como chat
 # ------------------------------------------------------------
@@ -658,10 +681,29 @@ def es_modulo_chat(modulo: str) -> bool:
     """
     Indica si el módulo usa conversaciones.
 
-    Administración no debe crear conversaciones.
     """
-    return modulo in CHAT_MODULES
+    role = st.session_state.get("user_role", "child")
 
+    # --------------------------------------------------------
+    # Administración nunca debe crear conversaciones
+    # --------------------------------------------------------
+    if modulo == "admin_panel":
+        return False
+
+    # --------------------------------------------------------
+    # Padres ven Amigo Imaginario solo para configurar
+    # Mi amigo y Recuerdos suaves
+    # --------------------------------------------------------
+    if modulo == "amigo_imaginario" and role in {"parent_admin", "guest_parent"}:
+        return False
+
+    # --------------------------------------------------------
+    # Padres ven Biblioteca solo como artículos
+    # --------------------------------------------------------
+    if modulo == "biblioteca_inteligente" and role in {"parent_admin", "guest_parent"}:
+        return False
+
+    return modulo in CHAT_MODULES
 
 # ------------------------------------------------------------
 # Asegurar módulos permitidos según rol
@@ -2150,6 +2192,15 @@ def render_biblioteca_panel(user_id: int) -> None:
 
         st.markdown(articulo["content"])
 
+                # ------------------------------------------------
+                # Padres y guest padres solo leen artículos.
+                # No se les muestra opción de llevar al chat educativo.
+                # ------------------------------------------------
+        role = st.session_state.get("user_role", "child")
+
+        if role in {"parent_admin", "guest_parent"}:
+            return
+        
         col_a, col_b = st.columns(2)
 
         with col_a:
@@ -3096,13 +3147,14 @@ def render_access_control_admin_panel() -> None:
         unsafe_allow_html=True
     )
 
-    tab_usuarios, tab_guests, tab_crear_guest, tab_tokens, tab_biblioteca = st.tabs(
+    tab_usuarios, tab_guests, tab_crear_guest, tab_tokens, tab_biblioteca, tab_apoyo = st.tabs(
         [
             "Usuarios",
             "Cuentas guest",
             "Crear guest",
             "Tokens",
             "Biblioteca",
+            "Apoyo a padres",
         ]
     )
 
@@ -3357,6 +3409,846 @@ def render_access_control_admin_panel() -> None:
     with tab_biblioteca:
         st.subheader("Administración de biblioteca")
         render_admin_panel()
+    # Apoyo a padres
+    with tab_apoyo:
+        render_superadmin_support_panel()
+
+# ------------------------------------------------------------
+# Traducir nombre técnico del módulo
+# ------------------------------------------------------------
+def format_module_name(module: str) -> str:
+    """
+    Convierte el nombre técnico del módulo a un texto visible.
+    """
+    return MODULE_LABELS.get(module, module.replace("_", " ").title())
+
+
+# ------------------------------------------------------------
+# Obtener hijos disponibles para el padre actual
+# ------------------------------------------------------------
+def get_parent_children_or_warning(parent_user_id: int) -> list[dict]:
+    """
+    Devuelve hijos vinculados al padre.
+    Si no hay vínculos, muestra una advertencia amigable.
+    """
+    children = list_children_for_parent(parent_user_id)
+
+    if not children:
+        st.info(
+            "Aún no hay un hijo vinculado a esta cuenta. "
+            "El superadmin puede vincular cuentas desde Administración."
+        )
+
+    return children
+
+
+# ------------------------------------------------------------
+# Panel de resumen del hijo para padres
+# ------------------------------------------------------------
+def render_parent_child_summary_panel(parent_user_id: int) -> None:
+    """
+    Muestra al padre un resumen general de actividad del hijo.
+
+    Importante:
+        Este resumen no es diagnóstico. Solo muestra uso del sistema.
+    """
+    st.markdown(
+        """
+        <div class="info-card">
+            <div class="info-title">Resumen del hijo</div>
+            <div class="info-text">
+                Aquí puedes ver una vista general del uso del sistema:
+                módulos usados, actividad reciente y tokens. Esta información
+                no representa diagnóstico clínico ni evaluación terapéutica.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    children = get_parent_children_or_warning(parent_user_id)
+
+    if not children:
+        return
+
+    child_id = st.selectbox(
+        "Selecciona hijo",
+        options=[child["id"] for child in children],
+        format_func=lambda value: next(
+            f"{child['display_name']} · @{child['username']}"
+            for child in children
+            if child["id"] == value
+        ),
+        key="parent_summary_child_select",
+    )
+
+    try:
+        summary = get_child_activity_summary(
+            parent_user_id=parent_user_id,
+            child_user_id=child_id,
+            allow_superadmin=False,
+        )
+    except Exception as error:
+        st.error(f"No se pudo cargar el resumen: {error}")
+        return
+
+    child = summary["child"]
+    token_wallet = summary.get("token_wallet") or {}
+    support_summary = summary.get("support_summary") or {}
+
+    st.subheader(f"Resumen de {child['display_name']}")
+
+    col_1, col_2, col_3 = st.columns(3)
+
+    with col_1:
+        st.metric(
+            "Tokens restantes",
+            token_wallet.get("remaining_tokens", 0),
+            help="Tokens disponibles para usar el chat."
+        )
+
+    with col_2:
+        st.metric(
+            "Tokens usados",
+            token_wallet.get("used_tokens", 0),
+            help="Tokens consumidos durante el periodo actual."
+        )
+
+    with col_3:
+        st.metric(
+            "Solicitudes abiertas",
+            support_summary.get("open_requests", 0) or 0,
+            help="Solicitudes de apoyo pendientes."
+        )
+
+    st.markdown("### Actividad por módulo")
+
+    messages_by_module = summary.get("messages_by_module") or []
+
+    if not messages_by_module:
+        st.info("Todavía no hay actividad registrada en los módulos.")
+    else:
+        rows = []
+
+        for item in messages_by_module:
+            rows.append({
+                "Módulo": format_module_name(item.get("module", "")),
+                "Mensajes totales": item.get("total_messages", 0) or 0,
+                "Mensajes del usuario": item.get("user_messages", 0) or 0,
+                "Respuestas del sistema": item.get("assistant_messages", 0) or 0,
+            })
+
+        st.dataframe(
+            rows,
+            width="stretch",
+            hide_index=True
+        )
+
+    st.markdown("### Actividad reciente")
+
+    recent_activity = summary.get("recent_activity") or []
+
+    if not recent_activity:
+        st.info("No hay conversaciones recientes.")
+    else:
+        for item in recent_activity:
+            st.markdown(
+                f"""
+                <div class="info-card">
+                    <div class="info-title">{item.get('title') or 'Conversación'}</div>
+                    <div class="info-text">
+                        Módulo: {format_module_name(item.get('module', ''))}<br>
+                        Mensajes: {item.get('total_messages', 0)}<br>
+                        Última actividad: {item.get('updated_at', '')}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+    st.caption(summary.get("note", ""))
+
+
+# ------------------------------------------------------------
+# Panel para que el padre escriba al superadmin / psicólogo
+# ------------------------------------------------------------
+def render_parent_support_messages_panel(parent_user_id: int) -> None:
+    """
+    Permite al padre enviar solicitudes de apoyo al superadmin.
+    """
+    st.markdown(
+        """
+        <div class="info-card">
+            <div class="info-title">Mensaje al psicólogo / superadmin</div>
+            <div class="info-text">
+                Puedes enviar una pregunta o solicitud de orientación.
+                El superadmin podrá responderte y, si aplica, recomendar
+                contactos o lugares especializados.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    children = list_children_for_parent(parent_user_id)
+
+    child_options = [None] + [child["id"] for child in children]
+
+    with st.form("parent_support_request_form"):
+        child_id = st.selectbox(
+            "Relacionado con",
+            options=child_options,
+            format_func=lambda value: "General / sin hijo específico"
+            if value is None
+            else next(
+                f"{child['display_name']} · @{child['username']}"
+                for child in children
+                if child["id"] == value
+            ),
+        )
+
+        subject = st.text_input(
+            "Asunto",
+            placeholder="Ejemplo: ¿Qué puedo hacer cuando se frustra?"
+        )
+
+        priority = st.selectbox(
+            "Prioridad",
+            ["normal", "alta"],
+            format_func=lambda value: "Normal" if value == "normal" else "Alta",
+        )
+
+        message = st.text_area(
+            "Mensaje",
+            height=160,
+            placeholder=(
+                "Describe qué está pasando, qué has intentado y qué tipo de apoyo te gustaría recibir."
+            )
+        )
+
+        submitted = st.form_submit_button("Enviar solicitud")
+
+    if submitted:
+        try:
+            create_support_request(
+                parent_user_id=parent_user_id,
+                child_user_id=child_id,
+                subject=subject,
+                message=message,
+                priority=priority,
+            )
+            st.success("Solicitud enviada correctamente.")
+            st.rerun()
+        except Exception as error:
+            st.error(f"No se pudo enviar la solicitud: {error}")
+
+    st.markdown("### Mis solicitudes")
+
+    requests = list_support_requests_for_parent(parent_user_id)
+
+    if not requests:
+        st.info("Todavía no has enviado solicitudes.")
+        return
+
+    for request in requests:
+        with st.expander(
+            f"{request['subject']} · Estado: {request['status']} · {request['created_at']}"
+        ):
+            st.write(f"**Prioridad:** {request['priority']}")
+            st.write(f"**Relacionado con:** {request.get('child_name') or 'General'}")
+            st.markdown(request["message"])
+
+            replies = list_support_replies(request["id"])
+            recommended_contacts = list_recommended_contacts_for_request(request["id"])
+
+            if replies:
+                st.markdown("#### Respuestas")
+                for reply in replies:
+                    st.markdown(
+                        f"""
+                        <div class="info-card">
+                            <div class="info-title">{reply.get('author_name')} respondió</div>
+                            <div class="info-text">
+                                {reply.get('message')}<br><br>
+                                <small>{reply.get('created_at')}</small>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+            if recommended_contacts:
+                st.markdown("#### Contactos recomendados para esta solicitud")
+
+                for contact in recommended_contacts:
+                    st.markdown(
+                        f"""
+                        <div class="info-card">
+                            <div class="info-title">{contact.get('name')}</div>
+                            <div class="info-text">
+                                Especialidad: {contact.get('specialty')}<br>
+                                Organización: {contact.get('organization')}<br>
+                                Teléfono: {contact.get('phone')}<br>
+                                Correo: {contact.get('email')}<br>
+                                Dirección: {contact.get('address')}<br>
+                                Nota: {contact.get('recommendation_note') or contact.get('notes')}
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+
+# ------------------------------------------------------------
+# Panel de contactos recomendados para padres
+# ------------------------------------------------------------
+def render_parent_contacts_panel() -> None:
+    """
+    Muestra contactos activos disponibles para padres.
+    """
+    st.markdown(
+        """
+        <div class="info-card">
+            <div class="info-title">Contactos y lugares de apoyo</div>
+            <div class="info-text">
+                Estos contactos son registrados por el superadmin.
+                Antes de asistir o contactar, verifica disponibilidad, costos,
+                horarios y credenciales profesionales.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    contacts = list_support_contacts(active_only=True)
+
+    if not contacts:
+        st.info("Aún no hay contactos recomendados registrados.")
+        return
+
+    for contact in contacts:
+        st.markdown(
+            f"""
+            <div class="info-card">
+                <div class="info-title">{contact.get('name')}</div>
+                <div class="info-text">
+                    Especialidad: {contact.get('specialty')}<br>
+                    Organización: {contact.get('organization')}<br>
+                    Teléfono: {contact.get('phone')}<br>
+                    Correo: {contact.get('email')}<br>
+                    Dirección: {contact.get('address')}<br>
+                    Notas: {contact.get('notes')}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+
+# ------------------------------------------------------------
+# Panel completo de seguimiento para padres
+# ------------------------------------------------------------
+def render_parent_support_dashboard(parent_user_id: int) -> None:
+    """
+    Renderiza el nuevo apartado de seguimiento y apoyo para padres.
+    """
+    tab_resumen, tab_mensajes, tab_contactos = st.tabs(
+        [
+            "Resumen del hijo",
+            "Mensajes al psicólogo",
+            "Contactos recomendados",
+        ]
+    )
+
+    with tab_resumen:
+        render_parent_child_summary_panel(parent_user_id)
+
+    with tab_mensajes:
+        render_parent_support_messages_panel(parent_user_id)
+
+    with tab_contactos:
+        render_parent_contacts_panel()
+
+
+# ------------------------------------------------------------
+# Normalizar rol desde fila de usuario
+# ------------------------------------------------------------
+def obtener_rol_desde_fila_usuario(usuario: dict) -> str:
+    """
+    Obtiene el rol real del usuario aunque venga desde distintas fuentes.
+
+    Algunas listas locales no traen 'role', pero sí pueden traer:
+    - role_label
+    - is_admin
+    """
+    role = str(usuario.get("role") or "").strip()
+
+    if role:
+        return normalize_role(role, bool(usuario.get("is_admin", False)))
+
+    role_label = str(usuario.get("role_label") or "").strip().lower()
+
+    if "superadmin" in role_label:
+        return "superadmin"
+
+    if "padre" in role_label or "madre" in role_label:
+        if "guest" in role_label or "invitado" in role_label:
+            return "guest_parent"
+        return "parent_admin"
+
+    if "niño" in role_label or "nino" in role_label:
+        if "guest" in role_label or "invitado" in role_label:
+            return "guest_child"
+        return "child"
+
+    if bool(usuario.get("is_admin", False)):
+        return "superadmin"
+
+    return "child"
+
+
+# ------------------------------------------------------------
+# Panel admin para vincular padres e hijos
+# ------------------------------------------------------------
+def render_parent_child_link_admin_panel() -> None:
+    """
+    Permite al superadmin vincular cuentas de padres con hijos.
+
+    Corrección:
+        Usa admin_list_users() cuando hay sesión FastAPI porque esa lista
+        sí trae roles como parent_admin, child, guest_parent, etc.
+    """
+    st.subheader("Vincular padre con hijo")
+
+    token = st.session_state.get("auth_token")
+
+    # --------------------------------------------------------
+    # Cargar usuarios desde backend admin.
+    # Si falla, usar fallback local.
+    # --------------------------------------------------------
+    try:
+        if token:
+            usuarios = admin_list_users(token)
+        else:
+            usuarios = list_users(limit=500)
+    except Exception as error:
+        st.warning(f"No se pudieron cargar usuarios desde API. Usando respaldo local. Detalle: {error}")
+        usuarios = list_users(limit=500)
+
+    # --------------------------------------------------------
+    # Separar padres e hijos usando rol real o role_label.
+    # --------------------------------------------------------
+    padres = []
+    hijos = []
+
+    for usuario in usuarios:
+        rol_usuario = obtener_rol_desde_fila_usuario(usuario)
+        usuario["role"] = rol_usuario
+
+        if rol_usuario in {"parent_admin", "guest_parent"}:
+            padres.append(usuario)
+
+        if rol_usuario in {"child", "guest_child"}:
+            hijos.append(usuario)
+
+    if not padres:
+        st.info(
+            "No hay usuarios con rol de padre. "
+            "Revisa que el usuario tenga rol parent_admin o guest_parent."
+        )
+
+        with st.expander("Ver usuarios detectados para depuración"):
+            st.dataframe(
+                [
+                    {
+                        "ID": usuario.get("id"),
+                        "Nombre": usuario.get("display_name"),
+                        "Usuario": usuario.get("username"),
+                        "Rol detectado": usuario.get("role"),
+                        "Etiqueta": usuario.get("role_label"),
+                    }
+                    for usuario in usuarios
+                ],
+                width="stretch",
+                hide_index=True
+            )
+        return
+
+    if not hijos:
+        st.info(
+            "No hay usuarios con rol de niño. "
+            "Revisa que el usuario tenga rol child o guest_child."
+        )
+
+        with st.expander("Ver usuarios detectados para depuración"):
+            st.dataframe(
+                [
+                    {
+                        "ID": usuario.get("id"),
+                        "Nombre": usuario.get("display_name"),
+                        "Usuario": usuario.get("username"),
+                        "Rol detectado": usuario.get("role"),
+                        "Etiqueta": usuario.get("role_label"),
+                    }
+                    for usuario in usuarios
+                ],
+                width="stretch",
+                hide_index=True
+            )
+        return
+
+    with st.form("link_parent_child_form"):
+        parent_id = st.selectbox(
+            "Padre / madre",
+            options=[parent["id"] for parent in padres],
+            format_func=lambda value: next(
+                f"{parent.get('display_name')} · @{parent.get('username')} · {parent.get('role_label', parent.get('role'))}"
+                for parent in padres
+                if parent["id"] == value
+            ),
+        )
+
+        child_id = st.selectbox(
+            "Hijo",
+            options=[child["id"] for child in hijos],
+            format_func=lambda value: next(
+                f"{child.get('display_name')} · @{child.get('username')} · {child.get('role_label', child.get('role'))}"
+                for child in hijos
+                if child["id"] == value
+            ),
+        )
+
+        submitted = st.form_submit_button("Vincular padre con hijo")
+
+    if submitted:
+        try:
+            link_parent_child(
+                parent_user_id=parent_id,
+                child_user_id=child_id,
+                created_by_user_id=st.session_state.user_id,
+            )
+
+            st.success("Padre e hijo vinculados correctamente.")
+            st.rerun()
+
+        except Exception as error:
+            st.error(f"No se pudo vincular: {error}")
+
+    st.markdown("### Vínculos existentes")
+
+    hay_vinculos = False
+
+    for parent in padres:
+        children = list_children_for_parent(parent["id"])
+
+        if not children:
+            continue
+
+        hay_vinculos = True
+
+        with st.expander(f"{parent.get('display_name')} · @{parent.get('username')}"):
+            for child in children:
+                col_info, col_action = st.columns([3, 1])
+
+                with col_info:
+                    st.write(f"**{child.get('display_name')}** · @{child.get('username')}")
+
+                with col_action:
+                    if st.button(
+                        "Desvincular",
+                        key=f"unlink_{parent['id']}_{child['id']}"
+                    ):
+                        unlink_parent_child(parent["id"], child["id"])
+                        st.success("Vínculo desactivado.")
+                        st.rerun()
+
+    if not hay_vinculos:
+        st.info("Todavía no hay vínculos registrados.")
+        
+
+# ------------------------------------------------------------
+# Panel admin de solicitudes de padres
+# ------------------------------------------------------------
+def render_superadmin_support_requests_panel() -> None:
+    """
+    Permite al superadmin revisar y responder solicitudes de padres.
+    """
+    st.subheader("Solicitudes de padres")
+
+    status_filter = st.selectbox(
+        "Filtrar por estado",
+        ["Todas", "open", "in_review", "closed"],
+        format_func=lambda value: {
+            "Todas": "Todas",
+            "open": "Abiertas",
+            "in_review": "En revisión",
+            "closed": "Cerradas",
+        }.get(value, value),
+    )
+
+    requests = list_support_requests_for_superadmin(status_filter)
+
+    if not requests:
+        st.info("No hay solicitudes con ese filtro.")
+        return
+
+    contacts = list_support_contacts(active_only=True)
+
+    for request in requests:
+        with st.expander(
+            f"#{request['id']} · {request['subject']} · {request['status']}"
+        ):
+            st.write(f"**Padre:** {request.get('parent_name')} · @{request.get('parent_username')}")
+            st.write(f"**Hijo:** {request.get('child_name') or 'General'}")
+            st.write(f"**Prioridad:** {request.get('priority')}")
+            st.write(f"**Fecha:** {request.get('created_at')}")
+            st.markdown(request["message"])
+
+            st.markdown("#### Respuestas previas")
+            replies = list_support_replies(request["id"])
+
+            if not replies:
+                st.info("Aún no hay respuestas.")
+            else:
+                for reply in replies:
+                    st.markdown(
+                        f"""
+                        <div class="info-card">
+                            <div class="info-title">{reply.get('author_name')}</div>
+                            <div class="info-text">
+                                {reply.get('message')}<br><br>
+                                <small>{reply.get('created_at')}</small>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+            with st.form(f"reply_request_{request['id']}"):
+                response_message = st.text_area(
+                    "Respuesta",
+                    height=140,
+                    placeholder=(
+                        "Escribe una recomendación general, pasos de apoyo en casa "
+                        "o indica si conviene contactar a un especialista."
+                    ),
+                    key=f"reply_text_{request['id']}",
+                )
+
+                new_status = st.selectbox(
+                    "Nuevo estado",
+                    ["in_review", "closed", "open"],
+                    format_func=lambda value: {
+                        "open": "Abierta",
+                        "in_review": "En revisión",
+                        "closed": "Cerrada",
+                    }.get(value, value),
+                    key=f"reply_status_{request['id']}",
+                )
+
+                submit_reply = st.form_submit_button("Enviar respuesta")
+
+            if submit_reply:
+                try:
+                    add_support_reply(
+                        request_id=request["id"],
+                        author_user_id=st.session_state.user_id,
+                        message=response_message,
+                        new_status=new_status,
+                    )
+                    st.success("Respuesta enviada.")
+                    st.rerun()
+                except Exception as error:
+                    st.error(f"No se pudo responder: {error}")
+
+            if contacts:
+                st.markdown("#### Recomendar contacto")
+
+                contact_id = st.selectbox(
+                    "Contacto",
+                    options=[contact["id"] for contact in contacts],
+                    format_func=lambda value: next(
+                        f"{contact['name']} · {contact['specialty']}"
+                        for contact in contacts
+                        if contact["id"] == value
+                    ),
+                    key=f"contact_request_{request['id']}",
+                )
+
+                note = st.text_input(
+                    "Nota para esta recomendación",
+                    key=f"contact_note_{request['id']}",
+                    placeholder="Ejemplo: Puede ser útil para evaluación inicial o acompañamiento familiar."
+                )
+
+                if st.button(
+                    "Agregar contacto recomendado",
+                    key=f"btn_contact_request_{request['id']}"
+                ):
+                    try:
+                        recommend_contact_for_request(
+                            request_id=request["id"],
+                            contact_id=contact_id,
+                            recommended_by_user_id=st.session_state.user_id,
+                            note=note,
+                        )
+                        st.success("Contacto recomendado en la solicitud.")
+                        st.rerun()
+                    except Exception as error:
+                        st.error(f"No se pudo recomendar contacto: {error}")
+
+
+# ------------------------------------------------------------
+# Panel admin para contactos recomendados
+# ------------------------------------------------------------
+def render_support_contacts_admin_panel() -> None:
+    """
+    Permite al superadmin registrar contactos o lugares especializados.
+
+    Corrección:
+        Después de guardar un contacto, el formulario se limpia
+        automáticamente usando una versión dinámica de keys.
+    """
+    st.subheader("Contactos recomendados")
+
+    # --------------------------------------------------------
+    # Mensaje de éxito persistente después del rerun
+    # --------------------------------------------------------
+    if st.session_state.get("support_contact_success_message"):
+        st.success(st.session_state.support_contact_success_message)
+        st.session_state.support_contact_success_message = ""
+
+    # --------------------------------------------------------
+    # Versión del formulario.
+    # Al incrementar este valor, Streamlit crea inputs nuevos
+    # y por eso los campos aparecen limpios.
+    # --------------------------------------------------------
+    if "support_contact_form_version" not in st.session_state:
+        st.session_state.support_contact_form_version = 0
+
+    form_version = st.session_state.support_contact_form_version
+
+    with st.form(
+        key=f"create_support_contact_form_{form_version}",
+        clear_on_submit=True
+    ):
+        name = st.text_input(
+            "Nombre del contacto o lugar",
+            key=f"contact_name_{form_version}"
+        )
+
+        specialty = st.text_input(
+            "Especialidad o tipo de apoyo",
+            key=f"contact_specialty_{form_version}"
+        )
+
+        organization = st.text_input(
+            "Organización / institución",
+            key=f"contact_organization_{form_version}"
+        )
+
+        phone = st.text_input(
+            "Teléfono",
+            key=f"contact_phone_{form_version}"
+        )
+
+        email = st.text_input(
+            "Correo",
+            key=f"contact_email_{form_version}"
+        )
+
+        address = st.text_area(
+            "Dirección",
+            height=80,
+            key=f"contact_address_{form_version}"
+        )
+
+        notes = st.text_area(
+            "Notas",
+            height=120,
+            key=f"contact_notes_{form_version}"
+        )
+
+        submitted = st.form_submit_button("Guardar contacto")
+
+    if submitted:
+        try:
+            create_support_contact(
+                name=name,
+                specialty=specialty,
+                organization=organization,
+                phone=phone,
+                email=email,
+                address=address,
+                notes=notes,
+                created_by_user_id=st.session_state.user_id,
+            )
+
+            # ------------------------------------------------
+            # Cambiar versión para limpiar automáticamente
+            # los campos del formulario.
+            # ------------------------------------------------
+            st.session_state.support_contact_form_version += 1
+
+            st.session_state.support_contact_success_message = (
+                "Contacto guardado correctamente."
+            )
+
+            st.rerun()
+
+        except Exception as error:
+            st.error(f"No se pudo guardar el contacto: {error}")
+
+    st.markdown("### Contactos activos")
+
+    contacts = list_support_contacts(active_only=False)
+
+    if not contacts:
+        st.info("Aún no hay contactos registrados.")
+        return
+
+    for contact in contacts:
+        with st.expander(
+            f"{contact['name']} · {contact['specialty']} · {'Activo' if contact['is_active'] else 'Inactivo'}"
+        ):
+            st.write(f"**Organización:** {contact.get('organization')}")
+            st.write(f"**Teléfono:** {contact.get('phone')}")
+            st.write(f"**Correo:** {contact.get('email')}")
+            st.write(f"**Dirección:** {contact.get('address')}")
+            st.write(f"**Notas:** {contact.get('notes')}")
+
+            if contact["is_active"]:
+                if st.button(
+                    "Desactivar contacto",
+                    key=f"deactivate_contact_{contact['id']}"
+                ):
+                    deactivate_support_contact(contact["id"])
+                    st.success("Contacto desactivado.")
+                    st.rerun()
+
+# ------------------------------------------------------------
+# Panel admin general de seguimiento y apoyo
+# ------------------------------------------------------------
+def render_superadmin_support_panel() -> None:
+    """
+    Panel completo del superadmin para seguimiento y apoyo a padres.
+    """
+    tab_vinculos, tab_solicitudes, tab_contactos = st.tabs(
+        [
+            "Vincular padres e hijos",
+            "Solicitudes de padres",
+            "Contactos",
+        ]
+    )
+
+    with tab_vinculos:
+        render_parent_child_link_admin_panel()
+
+    with tab_solicitudes:
+        render_superadmin_support_requests_panel()
+
+    with tab_contactos:
+        render_support_contacts_admin_panel()
 
 # ------------------------------------------------------------
 # Vista principal autenticada
@@ -3375,6 +4267,24 @@ def render_app() -> None:
     is_admin = st.session_state.is_admin
     shared_api = has_shared_api_session()
 
+    # --------------------------------------------------------
+    # Rol actual del usuario
+    # Se define aquí para que esté disponible en todo render_app().
+    # Esto evita errores como:
+    # UnboundLocalError: cannot access local variable 'role'
+    # --------------------------------------------------------
+    role = normalize_role(
+        st.session_state.get("user_role")
+        or st.session_state.get("role")
+        or ("superadmin" if is_admin else "child"),
+        bool(is_admin)
+    )
+
+    # --------------------------------------------------------
+    # Guardar el rol normalizado en sesión para que todos los
+    # módulos usen el mismo valor.
+    # --------------------------------------------------------
+    st.session_state.user_role = role
     # --------------------------------------------------------
     # Obtener módulos permitidos por rol
     # --------------------------------------------------------
@@ -3539,18 +4449,36 @@ def render_app() -> None:
             "Espacio activo en este momento"
         )
 
-    with col_stat_2:
-        if es_modulo_chat(modulo_actual):
-            render_stat_card(
+        with col_stat_2:
+            if es_modulo_chat(modulo_actual):
+                render_stat_card(
                 "Chats en este módulo",
                 str(len(conversaciones_modulo)),
                 "Conversaciones guardadas para este usuario"
             )
-        else:
-            render_stat_card(
+            elif modulo_actual == "admin_panel":
+                render_stat_card(
                 "Panel activo",
                 "Administración",
                 "Herramientas exclusivas del superadmin"
+            )
+            elif modulo_actual == "amigo_imaginario":
+                render_stat_card(
+                "Configuración",
+                "Mi amigo",
+                "Perfil y recuerdos suaves"
+            )
+            elif modulo_actual == "biblioteca_inteligente":
+                render_stat_card(
+                "Biblioteca",
+                "Solo lectura",
+                "Consulta de artículos disponibles"
+            )
+            else:
+                render_stat_card(
+                "Sección activa",
+                MODULE_LABELS[modulo_actual],
+                "Espacio disponible para tu rol"
             )
 
     with col_stat_3:
@@ -3650,34 +4578,401 @@ def render_app() -> None:
             st.error("No tienes permiso para acceder al panel de administración.")
         else:
             render_access_control_admin_panel()
+        st.divider()
+        render_aviso_legal()
+        return
 
-    # --------------------------------------------------------
+        # --------------------------------------------------------
     # Flujo: Biblioteca Inteligente
     # --------------------------------------------------------
     elif modulo_actual == "biblioteca_inteligente":
-        if is_admin:
-            tab_chat, tab_biblioteca, tab_admin = st.tabs(
-                ["Chat educativo", "Biblioteca", "Administración de biblioteca"]
-            )
-        else:
-            tab_chat, tab_biblioteca = st.tabs(
-                ["Chat educativo", "Biblioteca"]
-            )
-            tab_admin = None
+        role = st.session_state.get("user_role", "child")
 
-        with tab_chat:
+        # ----------------------------------------------------
+        # Superadmin:
+        # Puede usar chat educativo, ver artículos y administrar biblioteca.
+        # ----------------------------------------------------
+        if role == "superadmin":
+            tab_chat, tab_biblioteca, tab_admin = st.tabs(
+                [
+                    "Chat educativo",
+                    "Biblioteca",
+                    "Administración de biblioteca",
+                ]
+            )
+
+            with tab_chat:
+                st.markdown(
+                    """
+                    <div class="info-card">
+                        <div class="info-title">Chat educativo con apoyo de biblioteca interna</div>
+                        <div class="info-text">
+                            Puedes usar artículos como base para conversar y pedir explicaciones más sencillas.
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                mensaje_desde_ejemplo = None
+
+                if not st.session_state.ui_focus_mode:
+                    st.caption("Prueba con uno de estos ejemplos rápidos:")
+
+                    col_1, col_2, col_3 = st.columns(3)
+                    ejemplos = info_modulo["ejemplos"]
+
+                    with col_1:
+                        if st.button(
+                            ejemplos[0],
+                            key="ejemplo_biblio_1",
+                            width="stretch"
+                        ):
+                            mensaje_desde_ejemplo = ejemplos[0]
+
+                    with col_2:
+                        if st.button(
+                            ejemplos[1],
+                            key="ejemplo_biblio_2",
+                            width="stretch"
+                        ):
+                            mensaje_desde_ejemplo = ejemplos[1]
+
+                    with col_3:
+                        if st.button(
+                            ejemplos[2],
+                            key="ejemplo_biblio_3",
+                            width="stretch"
+                        ):
+                            mensaje_desde_ejemplo = ejemplos[2]
+
+                render_chat_history_with_feedback(
+                    user_id=user_id,
+                    modulo_actual=modulo_actual
+                )
+
+                mensaje_chat = st.chat_input(info_modulo["placeholder"])
+                mensaje_usuario = None
+
+                if st.session_state.pending_message:
+                    mensaje_usuario = st.session_state.pending_message
+                    st.session_state.pending_message = None
+                elif mensaje_chat:
+                    mensaje_usuario = mensaje_chat
+                elif mensaje_desde_ejemplo:
+                    mensaje_usuario = mensaje_desde_ejemplo
+
+                if mensaje_usuario:
+                    procesar_mensaje_chat(
+                        user_id=user_id,
+                        modulo_actual=modulo_actual,
+                        mensaje_usuario=mensaje_usuario
+                    )
+
+            with tab_biblioteca:
+                render_biblioteca_panel(user_id)
+
+            with tab_admin:
+                render_admin_panel()
+
+        # ----------------------------------------------------
+        # Padre / guest padre:
+        # Solo puede ver artículos de Biblioteca.
+        # No puede subir archivos, importar, exportar, editar ni eliminar.
+        # No usa chat educativo dentro de Biblioteca.
+        # ----------------------------------------------------
+        elif role in {"parent_admin", "guest_parent"}:
             st.markdown(
                 """
                 <div class="info-card">
-                    <div class="info-title">Chat educativo con apoyo de biblioteca interna</div>
+                    <div class="info-title">Biblioteca Inteligente</div>
                     <div class="info-text">
-                        Puedes usar artículos como base para conversar y pedir explicaciones más sencillas.
+                        Aquí puedes consultar artículos y recursos de apoyo.
+                        La edición, carga de documentos e importación de contenido
+                        están reservadas para el superadmin.
                     </div>
                 </div>
                 """,
                 unsafe_allow_html=True
             )
 
+            render_biblioteca_panel(user_id)
+
+        # ----------------------------------------------------
+        # Cualquier otro rol no debería llegar aquí.
+        # ----------------------------------------------------
+        else:
+            st.error("Tu cuenta no tiene permiso para acceder a la Biblioteca Inteligente.")
+            
+        # --------------------------------------------------------
+    # Flujo: Amigo Imaginario
+    # --------------------------------------------------------
+    elif modulo_actual == "amigo_imaginario":
+        role = st.session_state.get("user_role", "child")
+
+        # ----------------------------------------------------
+        # Reglas de pestañas:
+        # - Superadmin: Chat + Mi amigo + Recuerdos suaves
+        # - Padre: Mi amigo + Recuerdos suaves
+        # - Niño: solo Chat
+        # ----------------------------------------------------
+        if role == "superadmin":
+            tab_chat, tab_mi_amigo, tab_recuerdos = st.tabs(
+                [
+                    "Chat",
+                    "Mi amigo",
+                    "Recuerdos suaves",
+                ]
+            )
+
+        elif role in {"parent_admin", "guest_parent"}:
+            tab_mi_amigo, tab_recuerdos = st.tabs(
+                [
+                    "Mi amigo",
+                    "Recuerdos suaves",
+                ]
+            )
+            tab_chat = None
+
+        else:
+            tabs_amigo = st.tabs(["Chat"])
+            tab_chat = tabs_amigo[0]
+            tab_mi_amigo = None
+            tab_recuerdos = None
+
+        # ----------------------------------------------------
+        # Chat del Amigo Imaginario
+        # Visible para superadmin, child y guest_child.
+        # No visible para padres.
+        # ----------------------------------------------------
+        if tab_chat is not None:
+            with tab_chat:
+                col_chat, col_companion = st.columns([2.3, 1], gap="large")
+
+                with col_chat:
+                    mensaje_desde_ejemplo = None
+                    mensaje_desde_iniciativa = None
+
+                    st.markdown(
+                        f"""
+                        <div class="info-card">
+                            <div class="info-title">Ahora estás hablando con {st.session_state.friend_name}</div>
+                            <div class="info-text">
+                                Este amigo imaginario puede acompañar, escuchar, contar mini historias,
+                                proponer juegos tranquilos, iniciar dinámicas suaves y seguir la conversación con más calidez.
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+                    mensaje_desde_iniciativa = render_friend_initiatives_panel()
+
+                    if not st.session_state.ui_focus_mode:
+                        st.caption("Prueba con uno de estos ejemplos rápidos:")
+
+                        col_1, col_2, col_3 = st.columns(3)
+                        ejemplos = info_modulo["ejemplos"]
+
+                        with col_1:
+                            if st.button(
+                                ejemplos[0],
+                                key="ejemplo_1_amigo_imaginario",
+                                width="stretch"
+                            ):
+                                update_friend_companion_state("feliz")
+                                mensaje_desde_ejemplo = ejemplos[0]
+
+                        with col_2:
+                            if st.button(
+                                ejemplos[1],
+                                key="ejemplo_2_amigo_imaginario",
+                                width="stretch"
+                            ):
+                                update_friend_companion_state("juego")
+                                mensaje_desde_ejemplo = ejemplos[1]
+
+                        with col_3:
+                            if st.button(
+                                ejemplos[2],
+                                key="ejemplo_3_amigo_imaginario",
+                                width="stretch"
+                            ):
+                                update_friend_companion_state("cuento")
+                                mensaje_desde_ejemplo = ejemplos[2]
+
+                    render_chat_history_with_feedback(
+                        user_id=user_id,
+                        modulo_actual=modulo_actual
+                    )
+
+                    mensaje_chat = st.chat_input(info_modulo["placeholder"])
+                    mensaje_usuario = None
+
+                    if mensaje_desde_iniciativa:
+                        mensaje_usuario = mensaje_desde_iniciativa
+                    elif mensaje_desde_ejemplo:
+                        mensaje_usuario = mensaje_desde_ejemplo
+                    elif mensaje_chat:
+                        update_friend_companion_state("feliz")
+                        mensaje_usuario = mensaje_chat
+
+                    if mensaje_usuario:
+                        procesar_mensaje_chat(
+                            user_id=user_id,
+                            modulo_actual=modulo_actual,
+                            mensaje_usuario=mensaje_usuario
+                        )
+
+                with col_companion:
+                    render_friend_companion_panel()
+
+        # ----------------------------------------------------
+        # Configuración visual del amigo
+        # Visible para superadmin, parent_admin y guest_parent.
+        # ----------------------------------------------------
+        if tab_mi_amigo is not None:
+            with tab_mi_amigo:
+                st.markdown(
+                    """
+                    <div class="info-card">
+                        <div class="info-title">Configuración del amigo imaginario</div>
+                        <div class="info-text">
+                            Desde aquí se puede configurar el nombre y apariencia del amigo imaginario.
+                            Esta sección no está visible para el usuario niño.
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                render_friend_creation_panel(user_id)
+
+        # ----------------------------------------------------
+        # Recuerdos suaves
+        # Visible para superadmin, parent_admin y guest_parent.
+        # ----------------------------------------------------
+        if tab_recuerdos is not None:
+            with tab_recuerdos:
+                st.markdown(
+                    """
+                    <div class="info-card">
+                        <div class="info-title">Recuerdos suaves</div>
+                        <div class="info-text">
+                            Aquí se guardan preferencias de apoyo para personalizar
+                            el acompañamiento del amigo imaginario.
+                            Esta sección no está visible para el usuario niño.
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                render_friend_memory_panel(user_id)
+
+                st.markdown(
+                    f"""
+                    <div class="info-card">
+                        <div class="info-title">Lo que {st.session_state.friend_name} recuerda</div>
+                        <div class="info-text">
+                            Color favorito: {st.session_state.friend_profile.get("favorite_color") or "Todavía no guardado"}<br>
+                            Actividad favorita: {st.session_state.friend_profile.get("favorite_activity") or "Todavía no guardada"}<br>
+                            Cómo le gusta recibir ánimo: {st.session_state.friend_profile.get("encouragement_style") or "Todavía no guardado"}<br>
+                            Cuando necesita apoyo prefiere: {st.session_state.friend_profile.get("preferred_comfort") or "cuentos"}
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+    # --------------------------------------------------------
+    # Flujo: Modo Padres
+    # --------------------------------------------------------
+    elif modulo_actual == "modo_padres":
+        # ----------------------------------------------------
+        # Rol actual para decidir qué puede ver el usuario.
+        # Padre ve seguimiento y apoyo.
+        # Superadmin ve orientación general.
+        # ----------------------------------------------------
+        role = normalize_role(
+            st.session_state.get("user_role")
+            or st.session_state.get("role")
+            or ("superadmin" if is_admin else "child"),
+            bool(is_admin)
+        )
+
+        # ----------------------------------------------------
+        # Padres y guest padres ven seguimiento, solicitudes,
+        # contactos y también pueden usar el chat de orientación.
+        # ----------------------------------------------------
+        if role in {"parent_admin", "guest_parent"}:
+            tab_seguimiento, tab_orientacion = st.tabs(
+                [
+                    "Seguimiento y apoyo",
+                    "Orientación general",
+                ]
+            )
+
+            with tab_seguimiento:
+                render_parent_support_dashboard(user_id)
+
+            with tab_orientacion:
+                mensaje_desde_ejemplo = None
+
+                if not st.session_state.ui_focus_mode:
+                    st.caption("Prueba con uno de estos ejemplos rápidos:")
+
+                    col_1, col_2, col_3 = st.columns(3)
+                    ejemplos = info_modulo["ejemplos"]
+
+                    with col_1:
+                        if st.button(
+                            ejemplos[0],
+                            key=f"ejemplo_1_{modulo_actual}",
+                            width="stretch"
+                        ):
+                            mensaje_desde_ejemplo = ejemplos[0]
+
+                    with col_2:
+                        if st.button(
+                            ejemplos[1],
+                            key=f"ejemplo_2_{modulo_actual}",
+                            width="stretch"
+                        ):
+                            mensaje_desde_ejemplo = ejemplos[1]
+
+                    with col_3:
+                        if st.button(
+                            ejemplos[2],
+                            key=f"ejemplo_3_{modulo_actual}",
+                            width="stretch"
+                        ):
+                            mensaje_desde_ejemplo = ejemplos[2]
+
+                render_chat_history_with_feedback(
+                    user_id=user_id,
+                    modulo_actual=modulo_actual
+                )
+
+                mensaje_chat = st.chat_input(info_modulo["placeholder"])
+                mensaje_usuario = None
+
+                if mensaje_chat:
+                    mensaje_usuario = mensaje_chat
+                elif mensaje_desde_ejemplo:
+                    mensaje_usuario = mensaje_desde_ejemplo
+
+                if mensaje_usuario:
+                    procesar_mensaje_chat(
+                        user_id=user_id,
+                        modulo_actual=modulo_actual,
+                        mensaje_usuario=mensaje_usuario
+                    )
+
+        # ----------------------------------------------------
+        # Superadmin puede ver el chat de Modo Padres como antes.
+        # La gestión de solicitudes estará en Administración.
+        # ----------------------------------------------------
+        elif role == "superadmin":
             mensaje_desde_ejemplo = None
 
             if not st.session_state.ui_focus_mode:
@@ -3689,7 +4984,7 @@ def render_app() -> None:
                 with col_1:
                     if st.button(
                         ejemplos[0],
-                        key="ejemplo_biblio_1",
+                        key=f"ejemplo_1_{modulo_actual}",
                         width="stretch"
                     ):
                         mensaje_desde_ejemplo = ejemplos[0]
@@ -3697,7 +4992,7 @@ def render_app() -> None:
                 with col_2:
                     if st.button(
                         ejemplos[1],
-                        key="ejemplo_biblio_2",
+                        key=f"ejemplo_2_{modulo_actual}",
                         width="stretch"
                     ):
                         mensaje_desde_ejemplo = ejemplos[1]
@@ -3705,7 +5000,7 @@ def render_app() -> None:
                 with col_3:
                     if st.button(
                         ejemplos[2],
-                        key="ejemplo_biblio_3",
+                        key=f"ejemplo_3_{modulo_actual}",
                         width="stretch"
                     ):
                         mensaje_desde_ejemplo = ejemplos[2]
@@ -3718,10 +5013,7 @@ def render_app() -> None:
             mensaje_chat = st.chat_input(info_modulo["placeholder"])
             mensaje_usuario = None
 
-            if st.session_state.pending_message:
-                mensaje_usuario = st.session_state.pending_message
-                st.session_state.pending_message = None
-            elif mensaje_chat:
+            if mensaje_chat:
                 mensaje_usuario = mensaje_chat
             elif mensaje_desde_ejemplo:
                 mensaje_usuario = mensaje_desde_ejemplo
@@ -3733,185 +5025,12 @@ def render_app() -> None:
                     mensaje_usuario=mensaje_usuario
                 )
 
-        with tab_biblioteca:
-            render_biblioteca_panel(user_id)
+        else:
+            st.error("Tu cuenta no tiene permiso para acceder al Modo Padres.")
 
-        if tab_admin is not None:
-            with tab_admin:
-                render_admin_panel()
-
-    # --------------------------------------------------------
-    # Flujo: Amigo Imaginario
-    # --------------------------------------------------------
-    elif modulo_actual == "amigo_imaginario":
-        tab_chat, tab_mi_amigo, tab_recuerdos = st.tabs(
-            ["Chat", "Mi amigo", "Recuerdos suaves"]
-        )
-
-        with tab_chat:
-            col_chat, col_companion = st.columns([2.3, 1], gap="large")
-
-            with col_chat:
-                mensaje_desde_ejemplo = None
-                mensaje_desde_iniciativa = None
-
-                st.markdown(
-                    f"""
-                    <div class="info-card">
-                        <div class="info-title">Ahora estás hablando con {st.session_state.friend_name}</div>
-                        <div class="info-text">
-                            Este amigo imaginario puede acompañar, escuchar, contar mini historias,
-                            proponer juegos tranquilos, iniciar dinámicas suaves y seguir la conversación con más calidez.
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                mensaje_desde_iniciativa = render_friend_initiatives_panel()
-
-                if not st.session_state.ui_focus_mode:
-                    st.caption("Prueba con uno de estos ejemplos rápidos:")
-
-                    col_1, col_2, col_3 = st.columns(3)
-                    ejemplos = info_modulo["ejemplos"]
-
-                    with col_1:
-                        if st.button(
-                            ejemplos[0],
-                            key="ejemplo_1_amigo_imaginario",
-                            width="stretch"
-                        ):
-                            update_friend_companion_state("feliz")
-                            mensaje_desde_ejemplo = ejemplos[0]
-
-                    with col_2:
-                        if st.button(
-                            ejemplos[1],
-                            key="ejemplo_2_amigo_imaginario",
-                            width="stretch"
-                        ):
-                            update_friend_companion_state("juego")
-                            mensaje_desde_ejemplo = ejemplos[1]
-
-                    with col_3:
-                        if st.button(
-                            ejemplos[2],
-                            key="ejemplo_3_amigo_imaginario",
-                            width="stretch"
-                        ):
-                            update_friend_companion_state("cuento")
-                            mensaje_desde_ejemplo = ejemplos[2]
-
-                render_chat_history_with_feedback(
-                    user_id=user_id,
-                    modulo_actual=modulo_actual
-                )
-
-                mensaje_chat = st.chat_input(info_modulo["placeholder"])
-                mensaje_usuario = None
-
-                if mensaje_desde_iniciativa:
-                    mensaje_usuario = mensaje_desde_iniciativa
-                elif mensaje_desde_ejemplo:
-                    mensaje_usuario = mensaje_desde_ejemplo
-                elif mensaje_chat:
-                    update_friend_companion_state("feliz")
-                    mensaje_usuario = mensaje_chat
-
-                if mensaje_usuario:
-                    procesar_mensaje_chat(
-                        user_id=user_id,
-                        modulo_actual=modulo_actual,
-                        mensaje_usuario=mensaje_usuario
-                    )
-
-            with col_companion:
-                render_friend_companion_panel()
-
-        with tab_mi_amigo:
-            render_friend_creation_panel(user_id)
-
-        with tab_recuerdos:
-            render_friend_memory_panel(user_id)
-
-            st.markdown(
-                f"""
-                <div class="info-card">
-                    <div class="info-title">Lo que {st.session_state.friend_name} recuerda de ti</div>
-                    <div class="info-text">
-                        Color favorito: {st.session_state.friend_profile.get("favorite_color") or "Todavía no guardado"}<br>
-                        Actividad favorita: {st.session_state.friend_profile.get("favorite_activity") or "Todavía no guardada"}<br>
-                        Cómo te gusta que te animen: {st.session_state.friend_profile.get("encouragement_style") or "Todavía no guardado"}<br>
-                        Cuando necesitas apoyo prefieres: {st.session_state.friend_profile.get("preferred_comfort") or "cuentos"}
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-    # --------------------------------------------------------
-    # Flujo: Modo Padres
-    # --------------------------------------------------------
-    elif modulo_actual == "modo_padres":
-        mensaje_desde_ejemplo = None
-
-        if not st.session_state.ui_focus_mode:
-            st.caption("Prueba con uno de estos ejemplos rápidos:")
-
-            col_1, col_2, col_3 = st.columns(3)
-            ejemplos = info_modulo["ejemplos"]
-
-            with col_1:
-                if st.button(
-                    ejemplos[0],
-                    key=f"ejemplo_1_{modulo_actual}",
-                    width="stretch"
-                ):
-                    mensaje_desde_ejemplo = ejemplos[0]
-
-            with col_2:
-                if st.button(
-                    ejemplos[1],
-                    key=f"ejemplo_2_{modulo_actual}",
-                    width="stretch"
-                ):
-                    mensaje_desde_ejemplo = ejemplos[1]
-
-            with col_3:
-                if st.button(
-                    ejemplos[2],
-                    key=f"ejemplo_3_{modulo_actual}",
-                    width="stretch"
-                ):
-                    mensaje_desde_ejemplo = ejemplos[2]
-
-        render_chat_history_with_feedback(
-            user_id=user_id,
-            modulo_actual=modulo_actual
-        )
-
-        mensaje_chat = st.chat_input(info_modulo["placeholder"])
-        mensaje_usuario = None
-
-        if mensaje_chat:
-            mensaje_usuario = mensaje_chat
-        elif mensaje_desde_ejemplo:
-            mensaje_usuario = mensaje_desde_ejemplo
-
-        if mensaje_usuario:
-            procesar_mensaje_chat(
-                user_id=user_id,
-                modulo_actual=modulo_actual,
-                mensaje_usuario=mensaje_usuario
-            )
-
-    else:
-        st.error("Módulo no reconocido o no permitido para tu cuenta.")
-
-    st.divider()
-    render_aviso_legal()
-
+        st.divider()
+        render_aviso_legal()
+        return
 # ============================================================
 # Arranque principal de la aplicación
 # Este bloque debe estar SIEMPRE al final de app.py.
@@ -3934,6 +5053,10 @@ try:
     # Inicializar base de datos local y migraciones
     # --------------------------------------------------------
     initialize_database()
+
+
+    # Inicializa tablas de seguimiento, mensajes de apoyo y contactos
+    initialize_support_schema()
 
     # --------------------------------------------------------
     # Validar configuración general del proyecto

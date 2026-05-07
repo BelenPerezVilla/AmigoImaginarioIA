@@ -306,9 +306,20 @@ def get_role_label(role: str) -> str:
     return ROLE_LABELS.get(normalize_role(role), "Usuario")
 
 
+# ------------------------------------------------------------
+# Permisos por rol
+# ------------------------------------------------------------
 def get_permissions_for_role(role: str) -> dict[str, bool]:
     """
     Devuelve permisos simples para frontend y backend.
+
+    Reglas:
+        - Superadmin puede acceder a todo.
+        - Padre puede ver Modo Padres, Biblioteca solo lectura
+          y configuración del Amigo Imaginario.
+        - Niño solo puede usar el chat del Amigo Imaginario.
+        - Guest niño hereda permisos de niño.
+        - Guest padre hereda permisos de padre.
     """
     role = normalize_role(role)
 
@@ -317,14 +328,40 @@ def get_permissions_for_role(role: str) -> dict[str, bool]:
     is_child = role in {ROLE_CHILD, ROLE_GUEST_CHILD}
 
     return {
-        "can_access_amigo": is_superadmin or is_child,
-        "can_access_biblioteca": is_superadmin,
+        # ----------------------------------------------------
+        # Visibilidad de módulos
+        # ----------------------------------------------------
+        "can_access_amigo": is_superadmin or is_child or is_parent,
+        "can_access_biblioteca": is_superadmin or is_parent,
         "can_access_modo_padres": is_superadmin or is_parent,
         "can_access_admin": is_superadmin,
+
+        # ----------------------------------------------------
+        # Permisos administrativos
+        # ----------------------------------------------------
         "can_manage_users": is_superadmin,
         "can_manage_guests": is_superadmin,
+
+        # ----------------------------------------------------
+        # Biblioteca
+        # Padres solo consultan artículos.
+        # Solo superadmin administra biblioteca.
+        # ----------------------------------------------------
+        "can_view_library": is_superadmin or is_parent,
         "can_manage_library": is_superadmin,
-        "can_customize_child_friend": is_superadmin,
+
+        # ----------------------------------------------------
+        # Amigo imaginario
+        # Niño solo chatea.
+        # Padre configura Mi amigo y Recuerdos suaves.
+        # Superadmin puede todo.
+        # ----------------------------------------------------
+        "can_chat_with_friend": is_superadmin or is_child,
+        "can_customize_child_friend": is_superadmin or is_parent,
+
+        # ----------------------------------------------------
+        # Tokens
+        # ----------------------------------------------------
         "can_view_tokens": True,
     }
 
@@ -334,11 +371,11 @@ def get_permissions_for_role(role: str) -> dict[str, bool]:
 # ------------------------------------------------------------
 def allowed_modules_for_role(role: str) -> list[str]:
     """
-    Devuelve los módulos permitidos para cada rol.
+    Devuelve los módulos visibles para cada rol.
 
     Importante:
-        admin_panel se incluye solo para superadmin, pero no debe
-        tratarse como chat. Es una sección administrativa.
+        Para padres, Amigo Imaginario aparece solo para configurar
+        "Mi amigo" y "Recuerdos suaves", no para chatear.
     """
     role = normalize_role(role)
 
@@ -350,32 +387,40 @@ def allowed_modules_for_role(role: str) -> list[str]:
             "admin_panel",
         ]
 
-    if role == ROLE_PARENT_ADMIN:
+    if role in {ROLE_PARENT_ADMIN, ROLE_GUEST_PARENT}:
         return [
             "modo_padres",
-        ]
-
-    if role == ROLE_GUEST_PARENT:
-        return [
-            "modo_padres",
-        ]
-
-    if role == ROLE_CHILD:
-        return [
             "amigo_imaginario",
+            "biblioteca_inteligente",
         ]
 
-    if role == ROLE_GUEST_CHILD:
+    if role in {ROLE_CHILD, ROLE_GUEST_CHILD}:
         return [
             "amigo_imaginario",
         ]
 
     return []
 
+# ------------------------------------------------------------
+# Validar acceso real a módulo conversacional
+# ------------------------------------------------------------
 def can_access_module(role: str, module: str) -> bool:
     """
-    Indica si un rol puede entrar a un módulo.
+    Indica si un rol puede acceder a un módulo desde backend.
+
+    Nota:
+        Aunque el padre vea "amigo_imaginario" en la web para configurar,
+        no debe tener permiso de chat por backend.
     """
+    role = normalize_role(role)
+
+    # --------------------------------------------------------
+    # Padres pueden ver configuración del amigo en la web,
+    # pero no deben usar endpoints de chat del amigo.
+    # --------------------------------------------------------
+    if module == "amigo_imaginario" and role in {ROLE_PARENT_ADMIN, ROLE_GUEST_PARENT}:
+        return False
+
     return module in allowed_modules_for_role(role)
 
 
