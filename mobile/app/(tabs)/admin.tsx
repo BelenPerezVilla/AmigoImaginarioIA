@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -14,17 +15,35 @@ import { Ionicons } from "@expo/vector-icons";
 
 import {
   type AdminUser,
+  type SupportContact,
+  type SupportReply,
+  type SupportRequest,
+  adminAddSupportReplyRequest,
   adminCreateGuestRequest,
+  adminCreateSupportContactRequest,
   adminDeactivateGuestRequest,
+  adminDeactivateSupportContactRequest,
   adminExtendGuestRequest,
   adminListGuestsRequest,
+  adminListRequestContactsRequest,
+  adminListSupportContactsRequest,
+  adminListSupportRepliesRequest,
+  adminListSupportRequestsRequest,
   adminListUsersRequest,
+  adminRecommendContactRequest,
+  adminUpdateSupportStatusRequest,
   adminUpdateUserRoleRequest,
   adminUpdateUserTokensRequest,
 } from "../../src/lib/api";
 import { useAuth } from "../../src/lib/auth";
 
-type AdminTab = "usuarios" | "tokens" | "guests" | "crearGuest";
+type AdminTab =
+  | "usuarios"
+  | "tokens"
+  | "guests"
+  | "crearGuest"
+  | "apoyo"
+  | "contactos";
 
 type TokenInputs = {
   daily_limit: string;
@@ -46,6 +65,9 @@ function roleLabel(role: string): string {
 
 function statusLabel(status?: string): string {
   const map: Record<string, string> = {
+    open: "Abierta",
+    in_review: "En revisión",
+    closed: "Cerrada",
     active: "Activo",
     expired: "Expirado",
     inactive: "Inactivo",
@@ -64,6 +86,14 @@ export default function AdminScreen() {
 
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [guests, setGuests] = useState<AdminUser[]>([]);
+  const [supportRequests, setSupportRequests] = useState<SupportRequest[]>([]);
+  const [supportContacts, setSupportContacts] = useState<SupportContact[]>([]);
+
+  const [selectedRequest, setSelectedRequest] = useState<SupportRequest | null>(null);
+  const [requestReplies, setRequestReplies] = useState<SupportReply[]>([]);
+  const [requestContacts, setRequestContacts] = useState<SupportContact[]>([]);
+  const [replyText, setReplyText] = useState("");
+  const [recommendationNote, setRecommendationNote] = useState("");
 
   const [tokenInputs, setTokenInputs] = useState<Record<number, TokenInputs>>({});
 
@@ -75,6 +105,17 @@ export default function AdminScreen() {
   );
   const [guestHours, setGuestHours] = useState("4");
   const [guestTokens, setGuestTokens] = useState("10");
+
+  const [contactName, setContactName] = useState("");
+  const [contactSpecialty, setContactSpecialty] = useState("");
+  const [contactOrganization, setContactOrganization] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
+  const [contactAddress, setContactAddress] = useState("");
+  const [contactNotes, setContactNotes] = useState("");
+
+  const [actionLoading, setActionLoading] = useState(false);
+  const [detailsLoading, setDetailsLoading] = useState(false);
 
   const isSuperadmin = user?.role === "superadmin" || Boolean(user?.is_admin);
 
@@ -106,13 +147,22 @@ export default function AdminScreen() {
     try {
       setLoading(true);
 
-      const [usersData, guestsData] = await Promise.all([
+      const [
+        usersData,
+        guestsData,
+        supportRequestsData,
+        supportContactsData,
+      ] = await Promise.all([
         adminListUsersRequest(token),
         adminListGuestsRequest(token),
+        adminListSupportRequestsRequest(token, "Todas"),
+        adminListSupportContactsRequest(token),
       ]);
 
       setUsers(usersData);
       setGuests(guestsData);
+      setSupportRequests(supportRequestsData);
+      setSupportContacts(supportContactsData);
       buildTokenInputs(usersData);
     } catch (error: any) {
       Alert.alert("Error", error?.message || "No se pudo cargar administración.");
@@ -247,6 +297,177 @@ export default function AdminScreen() {
     }
   };
 
+  const openRequestDetails = async (request: SupportRequest) => {
+    if (!token) return;
+
+    try {
+      setSelectedRequest(request);
+      setDetailsLoading(true);
+      setReplyText("");
+      setRecommendationNote("");
+
+      const [repliesData, contactsData] = await Promise.all([
+        adminListSupportRepliesRequest(token, request.id),
+        adminListRequestContactsRequest(token, request.id),
+      ]);
+
+      setRequestReplies(repliesData);
+      setRequestContacts(contactsData);
+    } catch (error: any) {
+      Alert.alert("Error", error?.message || "No se pudieron cargar los detalles.");
+    } finally {
+      setDetailsLoading(false);
+    }
+  };
+
+  const reloadRequestDetails = async () => {
+    if (!token || !selectedRequest) return;
+
+    const [repliesData, contactsData] = await Promise.all([
+      adminListSupportRepliesRequest(token, selectedRequest.id),
+      adminListRequestContactsRequest(token, selectedRequest.id),
+    ]);
+
+    setRequestReplies(repliesData);
+    setRequestContacts(contactsData);
+  };
+
+  const handleReplyRequest = async () => {
+    if (!token || !selectedRequest) return;
+
+    if (!replyText.trim()) {
+      Alert.alert("Validación", "Escribe una respuesta.");
+      return;
+    }
+
+    try {
+      setActionLoading(true);
+
+      await adminAddSupportReplyRequest(token, selectedRequest.id, {
+        message: replyText,
+        new_status: "in_review",
+      });
+
+      setReplyText("");
+      await reloadRequestDetails();
+      await loadData();
+
+      Alert.alert("Listo", "Respuesta enviada correctamente.");
+    } catch (error: any) {
+      Alert.alert("Error", error?.message || "No se pudo enviar la respuesta.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleUpdateRequestStatus = async (status: string) => {
+    if (!token || !selectedRequest) return;
+
+    try {
+      setActionLoading(true);
+
+      const updated = await adminUpdateSupportStatusRequest(
+        token,
+        selectedRequest.id,
+        status
+      );
+
+      setSelectedRequest({
+        ...selectedRequest,
+        status: updated.status,
+        updated_at: updated.updated_at,
+      });
+
+      await loadData();
+
+      Alert.alert("Listo", "Estado actualizado.");
+    } catch (error: any) {
+      Alert.alert("Error", error?.message || "No se pudo actualizar el estado.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleRecommendContact = async (contactId: number) => {
+    if (!token || !selectedRequest) return;
+
+    try {
+      setActionLoading(true);
+
+      await adminRecommendContactRequest(
+        token,
+        selectedRequest.id,
+        contactId,
+        recommendationNote
+      );
+
+      setRecommendationNote("");
+      await reloadRequestDetails();
+
+      Alert.alert("Listo", "Contacto recomendado en la solicitud.");
+    } catch (error: any) {
+      Alert.alert("Error", error?.message || "No se pudo recomendar el contacto.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleCreateContact = async () => {
+    if (!token) return;
+
+    if (!contactName.trim()) {
+      Alert.alert("Validación", "Escribe el nombre del contacto o lugar.");
+      return;
+    }
+
+    try {
+      setActionLoading(true);
+
+      await adminCreateSupportContactRequest(token, {
+        name: contactName,
+        specialty: contactSpecialty,
+        organization: contactOrganization,
+        phone: contactPhone,
+        email: contactEmail,
+        address: contactAddress,
+        notes: contactNotes,
+      });
+
+      setContactName("");
+      setContactSpecialty("");
+      setContactOrganization("");
+      setContactPhone("");
+      setContactEmail("");
+      setContactAddress("");
+      setContactNotes("");
+
+      await loadData();
+
+      Alert.alert("Listo", "Contacto guardado correctamente.");
+    } catch (error: any) {
+      Alert.alert("Error", error?.message || "No se pudo crear el contacto.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDeactivateContact = async (contactId: number) => {
+    if (!token) return;
+
+    try {
+      setActionLoading(true);
+
+      await adminDeactivateSupportContactRequest(token, contactId);
+      await loadData();
+
+      Alert.alert("Listo", "Contacto desactivado.");
+    } catch (error: any) {
+      Alert.alert("Error", error?.message || "No se pudo desactivar el contacto.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   if (!isSuperadmin) {
     return (
       <View style={styles.centered}>
@@ -273,66 +494,34 @@ export default function AdminScreen() {
       <View style={styles.header}>
         <Text style={styles.title}>Administración</Text>
         <Text style={styles.text}>
-          Gestiona usuarios, roles, tokens y cuentas guest.
+          Gestiona usuarios, tokens, guests, apoyo a padres y contactos.
         </Text>
       </View>
 
       <View style={styles.tabs}>
-        <Pressable
-          style={[styles.tabButton, tab === "usuarios" && styles.tabButtonActive]}
-          onPress={() => setTab("usuarios")}
-        >
-          <Text
-            style={[
-              styles.tabButtonText,
-              tab === "usuarios" && styles.tabButtonTextActive,
-            ]}
+        {[
+          ["usuarios", "Usuarios"],
+          ["tokens", "Tokens"],
+          ["guests", "Guests"],
+          ["crearGuest", "Crear"],
+          ["apoyo", "Apoyo"],
+          ["contactos", "Contactos"],
+        ].map(([key, label]) => (
+          <Pressable
+            key={key}
+            style={[styles.tabButton, tab === key && styles.tabButtonActive]}
+            onPress={() => setTab(key as AdminTab)}
           >
-            Usuarios
-          </Text>
-        </Pressable>
-
-        <Pressable
-          style={[styles.tabButton, tab === "tokens" && styles.tabButtonActive]}
-          onPress={() => setTab("tokens")}
-        >
-          <Text
-            style={[
-              styles.tabButtonText,
-              tab === "tokens" && styles.tabButtonTextActive,
-            ]}
-          >
-            Tokens
-          </Text>
-        </Pressable>
-
-        <Pressable
-          style={[styles.tabButton, tab === "guests" && styles.tabButtonActive]}
-          onPress={() => setTab("guests")}
-        >
-          <Text
-            style={[
-              styles.tabButtonText,
-              tab === "guests" && styles.tabButtonTextActive,
-            ]}
-          >
-            Guests
-          </Text>
-        </Pressable>
-
-        <Pressable
-          style={[styles.tabButton, tab === "crearGuest" && styles.tabButtonActive]}
-          onPress={() => setTab("crearGuest")}
-        >
-          <Text
-            style={[
-              styles.tabButtonText,
-              tab === "crearGuest" && styles.tabButtonTextActive,
-            ]}
-          >
-            Crear
-          </Text>
-        </Pressable>
+            <Text
+              style={[
+                styles.tabButtonText,
+                tab === key && styles.tabButtonTextActive,
+              ]}
+            >
+              {label}
+            </Text>
+          </Pressable>
+        ))}
       </View>
 
       <ScrollView
@@ -341,163 +530,150 @@ export default function AdminScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={refreshData} />
         }
       >
-        {tab === "usuarios" && (
-          <>
-            {permanentUsers.map((item) => (
+        {tab === "usuarios" &&
+          permanentUsers.map((item) => (
+            <View key={item.id} style={styles.card}>
+              <Text style={styles.cardTitle}>{item.display_name}</Text>
+              <Text style={styles.text}>@{item.username}</Text>
+              <Text style={styles.text}>Rol actual: {roleLabel(item.role)}</Text>
+              <Text style={styles.text}>
+                Estado: {item.is_active ? "Activo" : "Inactivo"}
+              </Text>
+
+              <Text style={styles.label}>Cambiar rol</Text>
+
+              <View style={styles.roleRow}>
+                {["superadmin", "parent_admin", "child"].map((role) => (
+                  <Pressable
+                    key={role}
+                    style={[
+                      styles.roleButton,
+                      item.role === role && styles.roleButtonActive,
+                    ]}
+                    onPress={() => handleChangeRole(item.id, role)}
+                  >
+                    <Text
+                      style={[
+                        styles.roleButtonText,
+                        item.role === role && styles.roleButtonTextActive,
+                      ]}
+                    >
+                      {roleLabel(role)}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          ))}
+
+        {tab === "tokens" &&
+          tokenUsers.map((item) => {
+            const values = tokenInputs[item.id] || {
+              daily_limit: String(item.token_status?.daily_limit ?? 20),
+              reset_interval_hours: String(
+                item.token_status?.reset_interval_hours ?? 24
+              ),
+              low_threshold: String(item.token_status?.low_threshold ?? 5),
+            };
+
+            return (
               <View key={item.id} style={styles.card}>
                 <Text style={styles.cardTitle}>{item.display_name}</Text>
                 <Text style={styles.text}>@{item.username}</Text>
-                <Text style={styles.text}>
-                  Rol actual: {roleLabel(item.role)}
-                </Text>
-                <Text style={styles.text}>
-                  Estado: {item.is_active ? "Activo" : "Inactivo"}
-                </Text>
+                <Text style={styles.text}>Rol: {roleLabel(item.role)}</Text>
 
-                <Text style={styles.label}>Cambiar rol</Text>
-
-                <View style={styles.roleRow}>
-                  {["superadmin", "parent_admin", "child"].map((role) => (
-                    <Pressable
-                      key={role}
-                      style={[
-                        styles.roleButton,
-                        item.role === role && styles.roleButtonActive,
-                      ]}
-                      onPress={() => handleChangeRole(item.id, role)}
-                    >
-                      <Text
-                        style={[
-                          styles.roleButtonText,
-                          item.role === role && styles.roleButtonTextActive,
-                        ]}
-                      >
-                        {roleLabel(role)}
-                      </Text>
-                    </Pressable>
-                  ))}
+                <View style={styles.tokenInfoBox}>
+                  <Text style={styles.tokenInfoText}>
+                    Restantes: {item.token_status?.remaining_tokens ?? 0}
+                  </Text>
+                  <Text style={styles.tokenInfoText}>
+                    Usados: {item.token_status?.used_tokens ?? 0}
+                  </Text>
+                  <Text style={styles.tokenInfoText}>
+                    Reinicio: {item.token_status?.reset_text || "-"}
+                  </Text>
                 </View>
+
+                <Text style={styles.label}>Límite diario</Text>
+                <TextInput
+                  style={styles.input}
+                  keyboardType="numeric"
+                  value={values.daily_limit}
+                  onChangeText={(value) =>
+                    setTokenField(item.id, "daily_limit", value)
+                  }
+                />
+
+                <Text style={styles.label}>Reinicio cada cuántas horas</Text>
+                <TextInput
+                  style={styles.input}
+                  keyboardType="numeric"
+                  value={values.reset_interval_hours}
+                  onChangeText={(value) =>
+                    setTokenField(item.id, "reset_interval_hours", value)
+                  }
+                />
+
+                <Text style={styles.label}>Alerta de pocos tokens</Text>
+                <TextInput
+                  style={styles.input}
+                  keyboardType="numeric"
+                  value={values.low_threshold}
+                  onChangeText={(value) =>
+                    setTokenField(item.id, "low_threshold", value)
+                  }
+                />
+
+                <Pressable
+                  style={styles.primaryButton}
+                  onPress={() => handleUpdateTokens(item)}
+                >
+                  <Text style={styles.primaryButtonText}>Guardar tokens</Text>
+                </Pressable>
               </View>
-            ))}
-          </>
-        )}
+            );
+          })}
 
-        {tab === "tokens" && (
-          <>
-            {tokenUsers.map((item) => {
-              const values = tokenInputs[item.id] || {
-                daily_limit: String(item.token_status?.daily_limit ?? 20),
-                reset_interval_hours: String(
-                  item.token_status?.reset_interval_hours ?? 24
-                ),
-                low_threshold: String(item.token_status?.low_threshold ?? 5),
-              };
+        {tab === "guests" &&
+          (guests.length === 0 ? (
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Sin cuentas guest</Text>
+              <Text style={styles.text}>Todavía no has creado cuentas guest.</Text>
+            </View>
+          ) : (
+            guests.map((item) => (
+              <View key={item.id} style={styles.card}>
+                <Text style={styles.cardTitle}>{item.display_name}</Text>
+                <Text style={styles.text}>@{item.username}</Text>
+                <Text style={styles.text}>Rol: {roleLabel(item.role)}</Text>
+                <Text style={styles.text}>
+                  Estado: {statusLabel(item.guest_status)}
+                </Text>
+                <Text style={styles.text}>
+                  Horas asignadas: {item.guest_hours || 0}
+                </Text>
+                <Text style={styles.text}>
+                  Expira: {item.guest_expires_at || "-"}
+                </Text>
 
-              return (
-                <View key={item.id} style={styles.card}>
-                  <Text style={styles.cardTitle}>{item.display_name}</Text>
-                  <Text style={styles.text}>@{item.username}</Text>
-                  <Text style={styles.text}>Rol: {roleLabel(item.role)}</Text>
-
-                  <View style={styles.tokenInfoBox}>
-                    <Text style={styles.tokenInfoText}>
-                      Restantes: {item.token_status?.remaining_tokens ?? 0}
-                    </Text>
-                    <Text style={styles.tokenInfoText}>
-                      Usados: {item.token_status?.used_tokens ?? 0}
-                    </Text>
-                    <Text style={styles.tokenInfoText}>
-                      Reinicio: {item.token_status?.reset_text || "-"}
-                    </Text>
-                  </View>
-
-                  <Text style={styles.label}>Límite diario</Text>
-                  <TextInput
-                    style={styles.input}
-                    keyboardType="numeric"
-                    value={values.daily_limit}
-                    onChangeText={(value) =>
-                      setTokenField(item.id, "daily_limit", value)
-                    }
-                  />
-
-                  <Text style={styles.label}>Reinicio cada cuántas horas</Text>
-                  <TextInput
-                    style={styles.input}
-                    keyboardType="numeric"
-                    value={values.reset_interval_hours}
-                    onChangeText={(value) =>
-                      setTokenField(item.id, "reset_interval_hours", value)
-                    }
-                  />
-
-                  <Text style={styles.label}>Alerta de pocos tokens</Text>
-                  <TextInput
-                    style={styles.input}
-                    keyboardType="numeric"
-                    value={values.low_threshold}
-                    onChangeText={(value) =>
-                      setTokenField(item.id, "low_threshold", value)
-                    }
-                  />
+                <View style={styles.actionsRow}>
+                  <Pressable
+                    style={styles.secondaryButton}
+                    onPress={() => handleExtendGuest(item.id)}
+                  >
+                    <Text style={styles.secondaryButtonText}>+1 hora</Text>
+                  </Pressable>
 
                   <Pressable
-                    style={styles.primaryButton}
-                    onPress={() => handleUpdateTokens(item)}
+                    style={styles.dangerButton}
+                    onPress={() => handleDeactivateGuest(item.id)}
                   >
-                    <Text style={styles.primaryButtonText}>Guardar tokens</Text>
+                    <Text style={styles.dangerButtonText}>Desactivar</Text>
                   </Pressable>
                 </View>
-              );
-            })}
-          </>
-        )}
-
-        {tab === "guests" && (
-          <>
-            {guests.length === 0 ? (
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>Sin cuentas guest</Text>
-                <Text style={styles.text}>
-                  Todavía no has creado cuentas guest.
-                </Text>
               </View>
-            ) : (
-              guests.map((item) => (
-                <View key={item.id} style={styles.card}>
-                  <Text style={styles.cardTitle}>{item.display_name}</Text>
-                  <Text style={styles.text}>@{item.username}</Text>
-                  <Text style={styles.text}>Rol: {roleLabel(item.role)}</Text>
-                  <Text style={styles.text}>
-                    Estado: {statusLabel(item.guest_status)}
-                  </Text>
-                  <Text style={styles.text}>
-                    Horas asignadas: {item.guest_hours || 0}
-                  </Text>
-                  <Text style={styles.text}>
-                    Expira: {item.guest_expires_at || "-"}
-                  </Text>
-
-                  <View style={styles.actionsRow}>
-                    <Pressable
-                      style={styles.secondaryButton}
-                      onPress={() => handleExtendGuest(item.id)}
-                    >
-                      <Text style={styles.secondaryButtonText}>+1 hora</Text>
-                    </Pressable>
-
-                    <Pressable
-                      style={styles.dangerButton}
-                      onPress={() => handleDeactivateGuest(item.id)}
-                    >
-                      <Text style={styles.dangerButtonText}>Desactivar</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              ))
-            )}
-          </>
-        )}
+            ))
+          ))}
 
         {tab === "crearGuest" && (
           <View style={styles.card}>
@@ -588,7 +764,307 @@ export default function AdminScreen() {
             </Pressable>
           </View>
         )}
+
+        {tab === "apoyo" && (
+          <>
+            {supportRequests.length === 0 ? (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Sin solicitudes</Text>
+                <Text style={styles.text}>
+                  Todavía no hay solicitudes enviadas por padres.
+                </Text>
+              </View>
+            ) : (
+              supportRequests.map((request) => (
+                <Pressable
+                  key={request.id}
+                  style={styles.card}
+                  onPress={() => openRequestDetails(request)}
+                >
+                  <View style={styles.requestHeader}>
+                    <Text style={styles.cardTitle}>{request.subject}</Text>
+                    <Text style={styles.statusBadge}>
+                      {statusLabel(request.status)}
+                    </Text>
+                  </View>
+
+                  <Text style={styles.text}>
+                    Padre: {request.parent_name || request.parent_username || "-"}
+                  </Text>
+                  <Text style={styles.text}>
+                    Niño: {request.child_name || request.child_username || "General"}
+                  </Text>
+                  <Text style={styles.text}>Prioridad: {request.priority}</Text>
+                  <Text style={styles.text} numberOfLines={3}>
+                    {request.message}
+                  </Text>
+                  <Text style={styles.openText}>Tocar para responder</Text>
+                </Pressable>
+              ))
+            )}
+          </>
+        )}
+
+        {tab === "contactos" && (
+          <>
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Nuevo contacto recomendado</Text>
+
+              <Text style={styles.label}>Nombre o lugar</Text>
+              <TextInput
+                style={styles.input}
+                value={contactName}
+                onChangeText={setContactName}
+                placeholder="Ejemplo: Centro de apoyo infantil"
+              />
+
+              <Text style={styles.label}>Especialidad</Text>
+              <TextInput
+                style={styles.input}
+                value={contactSpecialty}
+                onChangeText={setContactSpecialty}
+                placeholder="Psicología infantil, terapia, pediatría..."
+              />
+
+              <Text style={styles.label}>Organización</Text>
+              <TextInput
+                style={styles.input}
+                value={contactOrganization}
+                onChangeText={setContactOrganization}
+                placeholder="Nombre de la clínica o institución"
+              />
+
+              <Text style={styles.label}>Teléfono</Text>
+              <TextInput
+                style={styles.input}
+                value={contactPhone}
+                onChangeText={setContactPhone}
+                keyboardType="phone-pad"
+              />
+
+              <Text style={styles.label}>Correo</Text>
+              <TextInput
+                style={styles.input}
+                value={contactEmail}
+                onChangeText={setContactEmail}
+                keyboardType="email-address"
+                autoCapitalize="none"
+              />
+
+              <Text style={styles.label}>Dirección</Text>
+              <TextInput
+                style={styles.input}
+                value={contactAddress}
+                onChangeText={setContactAddress}
+              />
+
+              <Text style={styles.label}>Notas</Text>
+              <TextInput
+                style={[styles.input, styles.multilineInput]}
+                value={contactNotes}
+                onChangeText={setContactNotes}
+                multiline
+              />
+
+              <Pressable
+                style={[styles.primaryButton, actionLoading && styles.disabled]}
+                onPress={handleCreateContact}
+                disabled={actionLoading}
+              >
+                <Text style={styles.primaryButtonText}>Guardar contacto</Text>
+              </Pressable>
+            </View>
+
+            {supportContacts.map((contact) => (
+              <View key={contact.id} style={styles.card}>
+                <Text style={styles.cardTitle}>{contact.name}</Text>
+                <Text style={styles.text}>Especialidad: {contact.specialty || "-"}</Text>
+                {!!contact.organization && (
+                  <Text style={styles.text}>Organización: {contact.organization}</Text>
+                )}
+                {!!contact.phone && <Text style={styles.text}>Teléfono: {contact.phone}</Text>}
+                {!!contact.email && <Text style={styles.text}>Correo: {contact.email}</Text>}
+                {!!contact.address && (
+                  <Text style={styles.text}>Dirección: {contact.address}</Text>
+                )}
+                {!!contact.notes && <Text style={styles.text}>Notas: {contact.notes}</Text>}
+                <Text style={styles.text}>
+                  Estado: {Number(contact.is_active) === 1 ? "Activo" : "Inactivo"}
+                </Text>
+
+                {Number(contact.is_active) === 1 && (
+                  <Pressable
+                    style={styles.dangerButtonFull}
+                    onPress={() => handleDeactivateContact(contact.id)}
+                  >
+                    <Text style={styles.dangerButtonText}>Desactivar contacto</Text>
+                  </Pressable>
+                )}
+              </View>
+            ))}
+          </>
+        )}
       </ScrollView>
+
+      <Modal
+        visible={!!selectedRequest}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setSelectedRequest(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {selectedRequest?.subject || "Solicitud"}
+              </Text>
+
+              <Pressable onPress={() => setSelectedRequest(null)}>
+                <Ionicons name="close" size={24} color="#0f172a" />
+              </Pressable>
+            </View>
+
+            {detailsLoading ? (
+              <ActivityIndicator size="large" color="#2f64b9" />
+            ) : (
+              <ScrollView showsVerticalScrollIndicator={false}>
+                <Text style={styles.text}>
+                  Estado: {statusLabel(selectedRequest?.status)}
+                </Text>
+                <Text style={styles.text}>
+                  Prioridad: {selectedRequest?.priority}
+                </Text>
+                <Text style={styles.text}>
+                  Padre: {selectedRequest?.parent_name || selectedRequest?.parent_username || "-"}
+                </Text>
+                <Text style={styles.text}>
+                  Niño: {selectedRequest?.child_name || selectedRequest?.child_username || "General"}
+                </Text>
+
+                <Text style={styles.modalSectionTitle}>Mensaje del padre</Text>
+                <Text style={styles.text}>{selectedRequest?.message}</Text>
+
+                <Text style={styles.modalSectionTitle}>Cambiar estado</Text>
+
+                <View style={styles.roleRow}>
+                  {["open", "in_review", "closed"].map((status) => (
+                    <Pressable
+                      key={status}
+                      style={[
+                        styles.roleButton,
+                        selectedRequest?.status === status && styles.roleButtonActive,
+                      ]}
+                      onPress={() => handleUpdateRequestStatus(status)}
+                    >
+                      <Text
+                        style={[
+                          styles.roleButtonText,
+                          selectedRequest?.status === status &&
+                            styles.roleButtonTextActive,
+                        ]}
+                      >
+                        {statusLabel(status)}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+
+                <Text style={styles.modalSectionTitle}>Responder</Text>
+                <TextInput
+                  style={[styles.input, styles.multilineInput]}
+                  value={replyText}
+                  onChangeText={setReplyText}
+                  placeholder="Escribe una respuesta para el padre..."
+                  multiline
+                />
+
+                <Pressable
+                  style={[styles.primaryButton, actionLoading && styles.disabled]}
+                  onPress={handleReplyRequest}
+                  disabled={actionLoading}
+                >
+                  <Text style={styles.primaryButtonText}>Enviar respuesta</Text>
+                </Pressable>
+
+                <Text style={styles.modalSectionTitle}>Respuestas</Text>
+
+                {requestReplies.length === 0 ? (
+                  <Text style={styles.text}>Aún no hay respuestas.</Text>
+                ) : (
+                  requestReplies.map((reply) => (
+                    <View key={reply.id} style={styles.replyCard}>
+                      <Text style={styles.cardTitle}>{reply.author_name}</Text>
+                      <Text style={styles.text}>{reply.message}</Text>
+                      <Text style={styles.dateText}>{reply.created_at}</Text>
+                    </View>
+                  ))
+                )}
+
+                <Text style={styles.modalSectionTitle}>Contactos recomendados</Text>
+
+                {requestContacts.length === 0 ? (
+                  <Text style={styles.text}>
+                    No hay contactos recomendados en esta solicitud.
+                  </Text>
+                ) : (
+                  requestContacts.map((contact) => (
+                    <View key={contact.id} style={styles.replyCard}>
+                      <Text style={styles.cardTitle}>{contact.name}</Text>
+                      <Text style={styles.text}>
+                        Especialidad: {contact.specialty || "-"}
+                      </Text>
+                      {!!contact.phone && (
+                        <Text style={styles.text}>Teléfono: {contact.phone}</Text>
+                      )}
+                      {!!contact.email && (
+                        <Text style={styles.text}>Correo: {contact.email}</Text>
+                      )}
+                      {!!contact.recommendation_note && (
+                        <Text style={styles.recommendationNote}>
+                          Nota: {contact.recommendation_note}
+                        </Text>
+                      )}
+                    </View>
+                  ))
+                )}
+
+                <Text style={styles.modalSectionTitle}>Recomendar otro contacto</Text>
+
+                <TextInput
+                  style={[styles.input, styles.multilineInputSmall]}
+                  value={recommendationNote}
+                  onChangeText={setRecommendationNote}
+                  placeholder="Nota opcional para esta recomendación..."
+                  multiline
+                />
+
+                {supportContacts
+                  .filter((contact) => Number(contact.is_active) === 1)
+                  .map((contact) => (
+                    <View key={contact.id} style={styles.replyCard}>
+                      <Text style={styles.cardTitle}>{contact.name}</Text>
+                      <Text style={styles.text}>
+                        Especialidad: {contact.specialty || "-"}
+                      </Text>
+                      {!!contact.phone && (
+                        <Text style={styles.text}>Teléfono: {contact.phone}</Text>
+                      )}
+
+                      <Pressable
+                        style={styles.secondaryButtonFull}
+                        onPress={() => handleRecommendContact(contact.id)}
+                      >
+                        <Text style={styles.secondaryButtonText}>
+                          Recomendar en solicitud
+                        </Text>
+                      </Pressable>
+                    </View>
+                  ))}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -709,6 +1185,14 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     color: "#0f172a",
   },
+  multilineInput: {
+    minHeight: 110,
+    textAlignVertical: "top",
+  },
+  multilineInputSmall: {
+    minHeight: 75,
+    textAlignVertical: "top",
+  },
   primaryButton: {
     backgroundColor: "#2f64b9",
     borderRadius: 14,
@@ -732,6 +1216,13 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
   },
+  secondaryButtonFull: {
+    backgroundColor: "#dbeafe",
+    paddingVertical: 11,
+    borderRadius: 12,
+    alignItems: "center",
+    marginTop: 10,
+  },
   secondaryButtonText: {
     color: "#1e3a8a",
     fontWeight: "900",
@@ -743,8 +1234,87 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
   },
+  dangerButtonFull: {
+    backgroundColor: "#fee2e2",
+    paddingVertical: 11,
+    borderRadius: 12,
+    alignItems: "center",
+    marginTop: 12,
+  },
   dangerButtonText: {
     color: "#991b1b",
     fontWeight: "900",
+  },
+  disabled: {
+    opacity: 0.55,
+  },
+  requestHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  statusBadge: {
+    backgroundColor: "#e9eef8",
+    color: "#2f64b9",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    overflow: "hidden",
+    fontWeight: "800",
+    fontSize: 12,
+  },
+  openText: {
+    marginTop: 8,
+    color: "#2f64b9",
+    fontWeight: "900",
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.45)",
+    justifyContent: "flex-end",
+  },
+  modalCard: {
+    backgroundColor: "#ffffff",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 18,
+    maxHeight: "90%",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 12,
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  modalTitle: {
+    flex: 1,
+    color: "#0f172a",
+    fontSize: 19,
+    fontWeight: "900",
+  },
+  modalSectionTitle: {
+    color: "#0f172a",
+    fontSize: 16,
+    fontWeight: "900",
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  replyCard: {
+    backgroundColor: "#f8fafc",
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 10,
+  },
+  dateText: {
+    color: "#94a3b8",
+    fontSize: 12,
+    marginTop: 8,
+  },
+  recommendationNote: {
+    color: "#2f64b9",
+    marginTop: 8,
+    fontWeight: "800",
+    lineHeight: 20,
   },
 });

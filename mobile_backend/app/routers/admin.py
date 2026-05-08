@@ -5,9 +5,11 @@
 # - roles
 # - tokens
 # - cuentas guest
+# - solicitudes de apoyo de padres
+# - contactos recomendados
 # ============================================================
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from database.access_control import (
@@ -20,13 +22,24 @@ from database.access_control import (
     set_user_token_policy,
     update_user_role,
 )
+from database.support_db import (
+    add_support_reply,
+    create_support_contact,
+    deactivate_support_contact,
+    list_recommended_contacts_for_request,
+    list_support_contacts,
+    list_support_replies,
+    list_support_requests_for_superadmin,
+    recommend_contact_for_request,
+    update_support_request_status,
+)
 from mobile_backend.app.core.deps import get_current_user
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
 # ============================================================
-# Schemas
+# Schemas: usuarios / guests / tokens
 # ============================================================
 
 class UpdateRoleRequest(BaseModel):
@@ -50,6 +63,33 @@ class CreateGuestRequest(BaseModel):
 
 class ExtendGuestRequest(BaseModel):
     extra_hours: int = Field(default=1, ge=1)
+
+
+# ============================================================
+# Schemas: apoyo a padres
+# ============================================================
+
+class AddSupportReplyRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+    new_status: str = Field(default="in_review")
+
+
+class UpdateSupportStatusRequest(BaseModel):
+    status: str = Field(min_length=1)
+
+
+class CreateSupportContactRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=180)
+    specialty: str = Field(default="", max_length=180)
+    organization: str = Field(default="", max_length=180)
+    phone: str = Field(default="", max_length=80)
+    email: str = Field(default="", max_length=180)
+    address: str = Field(default="", max_length=300)
+    notes: str = Field(default="", max_length=1000)
+
+
+class RecommendContactRequest(BaseModel):
+    note: str = Field(default="", max_length=1000)
 
 
 # ============================================================
@@ -185,6 +225,161 @@ def admin_deactivate_guest(
 
     try:
         return deactivate_guest_user(user_id)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
+
+
+# ============================================================
+# Apoyo a padres / solicitudes
+# ============================================================
+
+@router.get("/support-requests")
+def admin_list_support_requests(
+    status_filter: str = Query(default="Todas"),
+    current_user: dict = Depends(get_current_user),
+) -> list[dict]:
+    require_superadmin(current_user)
+
+    return list_support_requests_for_superadmin(
+        status_filter=status_filter,
+    )
+
+
+@router.get("/support-requests/{request_id}/replies")
+def admin_list_support_replies(
+    request_id: int,
+    current_user: dict = Depends(get_current_user),
+) -> list[dict]:
+    require_superadmin(current_user)
+
+    return list_support_replies(request_id)
+
+
+@router.post("/support-requests/{request_id}/reply")
+def admin_add_support_reply(
+    request_id: int,
+    payload: AddSupportReplyRequest,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    require_superadmin(current_user)
+
+    try:
+        return add_support_reply(
+            request_id=request_id,
+            author_user_id=current_user["id"],
+            message=payload.message,
+            new_status=payload.new_status,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
+
+
+@router.patch("/support-requests/{request_id}/status")
+def admin_update_support_status(
+    request_id: int,
+    payload: UpdateSupportStatusRequest,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    require_superadmin(current_user)
+
+    try:
+        return update_support_request_status(
+            request_id=request_id,
+            status=payload.status,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
+
+
+@router.get("/support-requests/{request_id}/contacts")
+def admin_list_request_recommended_contacts(
+    request_id: int,
+    current_user: dict = Depends(get_current_user),
+) -> list[dict]:
+    require_superadmin(current_user)
+
+    return list_recommended_contacts_for_request(request_id)
+
+
+@router.post("/support-requests/{request_id}/contacts/{contact_id}/recommend")
+def admin_recommend_contact_for_request(
+    request_id: int,
+    contact_id: int,
+    payload: RecommendContactRequest,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    require_superadmin(current_user)
+
+    try:
+        return recommend_contact_for_request(
+            request_id=request_id,
+            contact_id=contact_id,
+            recommended_by_user_id=current_user["id"],
+            note=payload.note,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
+
+
+# ============================================================
+# Contactos recomendados
+# ============================================================
+
+@router.get("/support-contacts")
+def admin_list_support_contacts(
+    current_user: dict = Depends(get_current_user),
+) -> list[dict]:
+    require_superadmin(current_user)
+
+    return list_support_contacts(active_only=False)
+
+
+@router.post("/support-contacts")
+def admin_create_support_contact(
+    payload: CreateSupportContactRequest,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    require_superadmin(current_user)
+
+    try:
+        return create_support_contact(
+            name=payload.name,
+            specialty=payload.specialty,
+            organization=payload.organization,
+            phone=payload.phone,
+            email=payload.email,
+            address=payload.address,
+            notes=payload.notes,
+            created_by_user_id=current_user["id"],
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
+
+
+@router.patch("/support-contacts/{contact_id}/deactivate")
+def admin_deactivate_support_contact(
+    contact_id: int,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    require_superadmin(current_user)
+
+    try:
+        return deactivate_support_contact(contact_id)
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

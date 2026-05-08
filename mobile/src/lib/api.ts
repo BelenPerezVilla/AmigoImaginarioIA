@@ -974,3 +974,162 @@ export async function updateChildAvatarProfileRequest(
     token
   );
 }
+
+// ============================================================
+// ADMIN / APOYO A PADRES / CONTACTOS
+// ============================================================
+
+export async function adminListSupportRequestsRequest(
+  token: string,
+  statusFilter: string = "Todas"
+): Promise<SupportRequest[]> {
+  const query = new URLSearchParams({
+    status_filter: statusFilter,
+  });
+
+  return apiRequest<SupportRequest[]>(
+    `/api/admin/support-requests?${query.toString()}`,
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function adminListSupportRepliesRequest(
+  token: string,
+  requestId: number
+): Promise<SupportReply[]> {
+  return apiRequest<SupportReply[]>(
+    `/api/admin/support-requests/${requestId}/replies`,
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function adminAddSupportReplyRequest(
+  token: string,
+  requestId: number,
+  payload: {
+    message: string;
+    new_status: string;
+  }
+): Promise<SupportReply> {
+  return apiRequest<SupportReply>(
+    `/api/admin/support-requests/${requestId}/reply`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        message: payload.message.trim(),
+        new_status: payload.new_status,
+      }),
+    },
+    token
+  );
+}
+
+export async function adminUpdateSupportStatusRequest(
+  token: string,
+  requestId: number,
+  status: string
+): Promise<SupportRequest> {
+  return apiRequest<SupportRequest>(
+    `/api/admin/support-requests/${requestId}/status`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        status,
+      }),
+    },
+    token
+  );
+}
+
+export async function adminListRequestContactsRequest(
+  token: string,
+  requestId: number
+): Promise<SupportContact[]> {
+  return apiRequest<SupportContact[]>(
+    `/api/admin/support-requests/${requestId}/contacts`,
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function adminRecommendContactRequest(
+  token: string,
+  requestId: number,
+  contactId: number,
+  note: string
+): Promise<SupportContact> {
+  return apiRequest<SupportContact>(
+    `/api/admin/support-requests/${requestId}/contacts/${contactId}/recommend`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        note: note.trim(),
+      }),
+    },
+    token
+  );
+}
+
+export async function adminListSupportContactsRequest(
+  token: string
+): Promise<SupportContact[]> {
+  return apiRequest<SupportContact[]>(
+    "/api/admin/support-contacts",
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function adminCreateSupportContactRequest(
+  token: string,
+  payload: {
+    name: string;
+    specialty: string;
+    organization: string;
+    phone: string;
+    email: string;
+    address: string;
+    notes: string;
+  }
+): Promise<SupportContact> {
+  return apiRequest<SupportContact>(
+    "/api/admin/support-contacts",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        name: payload.name.trim(),
+        specialty: payload.specialty.trim(),
+        organization: payload.organization.trim(),
+        phone: payload.phone.trim(),
+        email: payload.email.trim(),
+        address: payload.address.trim(),
+        notes: payload.notes.trim(),
+      }),
+    },
+    token
+  );
+}
+
+export async function adminDeactivateSupportContactRequest(
+  token: string,
+  contactId: number
+): Promise<SupportContact> {
+  return apiRequest<SupportContact>(
+    `/api/admin/support-contacts/${contactId}/deactivate`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({}),
+    },
+    token
+  );
+}
