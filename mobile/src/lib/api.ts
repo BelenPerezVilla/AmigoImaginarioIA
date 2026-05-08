@@ -897,3 +897,80 @@ export async function adminDeactivateGuestRequest(
     token
   );
 }
+
+// ============================================================
+// CONFIGURACIÓN DEL AMIGO DE HIJOS / MODO PADRES
+// ============================================================
+
+export type ChildFriendProfile = {
+  user: {
+    id: number;
+    username: string;
+    display_name: string;
+    role: string;
+    friend_name: string;
+    favorite_color: string;
+    favorite_activity: string;
+    encouragement_style: string;
+    preferred_comfort: string;
+  };
+  avatar: ImaginaryFriendAvatar;
+};
+
+export async function getChildFriendProfileRequest(
+  token: string,
+  childUserId: number
+): Promise<ChildFriendProfile> {
+  return apiRequest<ChildFriendProfile>(
+    `/api/support/children/${childUserId}/friend-profile`,
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function updateChildFriendPreferencesRequest(
+  token: string,
+  childUserId: number,
+  payload: UpdateFriendPreferencesPayload
+): Promise<ChildFriendProfile> {
+  return apiRequest<ChildFriendProfile>(
+    `/api/support/children/${childUserId}/friend-preferences`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        friend_name: payload.friend_name.trim(),
+        favorite_color: payload.favorite_color.trim(),
+        favorite_activity: payload.favorite_activity.trim(),
+        encouragement_style: payload.encouragement_style.trim(),
+        preferred_comfort: payload.preferred_comfort.trim().toLowerCase(),
+      }),
+    },
+    token
+  );
+}
+
+export async function updateChildAvatarProfileRequest(
+  token: string,
+  childUserId: number,
+  payload: UpdateAvatarPayload
+): Promise<ChildFriendProfile> {
+  return apiRequest<ChildFriendProfile>(
+    `/api/support/children/${childUserId}/avatar`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        face_shape: payload.face_shape.trim(),
+        primary_color: payload.primary_color.trim(),
+        hair_style: payload.hair_style.trim(),
+        hair_color: payload.hair_color.trim(),
+        eye_style: payload.eye_style.trim(),
+        mouth_style: payload.mouth_style.trim(),
+        accessory: payload.accessory.trim(),
+        background_style: payload.background_style.trim(),
+      }),
+    },
+    token
+  );
+}

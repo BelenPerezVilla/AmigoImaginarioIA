@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Modal,
   Pressable,
   RefreshControl,
@@ -14,8 +15,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
 import {
-  addFavoriteArticleRequest,
   type Article,
+  addFavoriteArticleRequest,
   getArticleById,
   listArticles,
   listFavoriteArticles,
@@ -23,318 +24,256 @@ import {
   sendArticleToChatRequest,
 } from "../../src/lib/api";
 import { useAuth } from "../../src/lib/auth";
+import {
+  canSeeBiblioteca,
+  isBibliotecaReadOnly,
+} from "../../src/lib/roleAccess";
 
-// ------------------------------------------------------------
-// Obtener icono según categoría del artículo
-// ------------------------------------------------------------
-function getCategoryIcon(category: string): keyof typeof Ionicons.glyphMap {
-  const value = String(category || "").toLowerCase();
+const CATEGORY_OPTIONS = [
+  "Todas",
+  "General",
+  "Emociones",
+  "Comunicación",
+  "Rutinas",
+  "Crisis",
+  "Neurodivergencia",
+  "Padres",
+];
 
-  if (value.includes("tdah")) return "flash-outline";
-  if (value.includes("aut")) return "planet-outline";
-  if (value.includes("dislexia")) return "book-outline";
-  if (value.includes("ansiedad")) return "leaf-outline";
-  if (value.includes("famil")) return "people-outline";
-  if (value.includes("escuela")) return "school-outline";
+const READER_OPTIONS = ["Todos", "Niños", "Padres"];
 
-  return "library-outline";
+function normalizeText(value: string): string {
+  return String(value || "").trim();
 }
 
-// ------------------------------------------------------------
-// Obtener color suave según tipo de lector
-// ------------------------------------------------------------
-function getReaderColors(readerType: string) {
-  const value = String(readerType || "").toLowerCase();
-
-  if (value.includes("padre") || value.includes("cuidador")) {
-    return { bg: "#e8f4ff", text: "#2f64b9" };
-  }
-
-  if (value.includes("docente")) {
-    return { bg: "#eaf8ef", text: "#2e8b57" };
-  }
-
-  return { bg: "#f3edff", text: "#6d46c2" };
-}
-
-// ------------------------------------------------------------
-// Tarjeta visual de artículo
-// ------------------------------------------------------------
 function ArticleCard({
   article,
   isFavorite,
   onOpen,
   onToggleFavorite,
+  showFavoriteButton = true,
 }: {
   article: Article;
   isFavorite: boolean;
   onOpen: (articleId: number) => void;
   onToggleFavorite: (articleId: number, nextState: boolean) => void;
+  showFavoriteButton?: boolean;
 }) {
-  const iconName = getCategoryIcon(article.category);
-  const readerColors = getReaderColors(article.reader_type);
-
   return (
     <Pressable style={styles.articleCard} onPress={() => onOpen(article.id)}>
-      <View style={styles.articleHeaderRow}>
-        <View style={styles.articleIconCircle}>
-          <Ionicons name={iconName} size={20} color="#2f64b9" />
+      <View style={styles.articleHeader}>
+        <View style={styles.articleTitleBlock}>
+          <Text style={styles.articleTitle}>{article.title}</Text>
+
+          <View style={styles.badgesRow}>
+            {!!article.category && (
+              <Text style={styles.badge}>{article.category}</Text>
+            )}
+
+            {!!article.reader_type && (
+              <Text style={styles.badgeSecondary}>{article.reader_type}</Text>
+            )}
+          </View>
         </View>
 
-        <View style={styles.articleHeaderText}>
-          <Text style={styles.articleTitle} numberOfLines={2}>
-            {article.title}
-          </Text>
-
-          <Text style={styles.articleCategory} numberOfLines={1}>
-            {article.category}
-          </Text>
-        </View>
-
-        <Pressable
-          style={styles.favoriteIconButton}
-          onPress={() => onToggleFavorite(article.id, !isFavorite)}
-        >
-          <Ionicons
-            name={isFavorite ? "heart" : "heart-outline"}
-            size={20}
-            color={isFavorite ? "#e6527a" : "#64748b"}
-          />
-        </Pressable>
-      </View>
-
-      <Text style={styles.articleDescription} numberOfLines={3}>
-        {article.short_description}
-      </Text>
-
-      <View style={styles.articleFooterRow}>
-        <View
-          style={[
-            styles.readerBadge,
-            { backgroundColor: readerColors.bg },
-          ]}
-        >
-          <Text
-            style={[
-              styles.readerBadgeText,
-              { color: readerColors.text },
-            ]}
+        {showFavoriteButton && (
+          <Pressable
+            style={styles.favoriteIconButton}
+            onPress={() => onToggleFavorite(article.id, !isFavorite)}
           >
-            {article.reader_type}
-          </Text>
-        </View>
-
-        <View style={styles.openRow}>
-          <Text style={styles.openText}>Abrir</Text>
-          <Ionicons name="chevron-forward" size={16} color="#2f64b9" />
-        </View>
+            <Ionicons
+              name={isFavorite ? "heart" : "heart-outline"}
+              size={21}
+              color={isFavorite ? "#e6527a" : "#64748b"}
+            />
+          </Pressable>
+        )}
       </View>
+
+      {!!article.short_description && (
+        <Text style={styles.articleDescription} numberOfLines={3}>
+          {article.short_description}
+        </Text>
+      )}
+
+      <Text style={styles.openArticleText}>Tocar para leer</Text>
     </Pressable>
   );
 }
 
 export default function BibliotecaScreen() {
   const router = useRouter();
-  const { token } = useAuth();
+  const { token, user } = useAuth();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [actionLoading, setActionLoading] = useState(false);
 
-  const [searchText, setSearchText] = useState("");
   const [articles, setArticles] = useState<Article[]>([]);
   const [favoriteIds, setFavoriteIds] = useState<number[]>([]);
+
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("Todas");
+  const [readerType, setReaderType] = useState("Todos");
+
   const [selectedArticle, setSelectedArticle] = useState<Article | null>(null);
-  const [detailVisible, setDetailVisible] = useState(false);
+  const [articleModalVisible, setArticleModalVisible] = useState(false);
 
-  const [selectedCategory, setSelectedCategory] = useState("Todas");
-  const [selectedReaderType, setSelectedReaderType] = useState("Todos");
-  const [viewMode, setViewMode] = useState<"todos" | "favoritos">("todos");
+  const [actionLoading, setActionLoading] = useState(false);
 
-  // ----------------------------------------------------------
-  // Cargar artículos
-  // ----------------------------------------------------------
-  const loadArticles = async () => {
-    if (!token) return;
+  const canAccessLibrary = canSeeBiblioteca(user);
+  const readOnlyMode = isBibliotecaReadOnly(user);
 
-    const fetched = await listArticles(
-      token,
-      searchText.trim(),
-      "Todas",
-      "Todos"
-    );
+  const filteredArticles = useMemo(() => {
+    return articles;
+  }, [articles]);
 
-    setArticles(fetched);
-  };
-
-  // ----------------------------------------------------------
-  // Cargar favoritos
-  // ----------------------------------------------------------
-  const loadFavorites = async () => {
-    if (!token) return;
-
-    const favorites = await listFavoriteArticles(token);
-    setFavoriteIds(favorites.map((item) => item.id));
-  };
-
-  // ----------------------------------------------------------
-  // Carga inicial
-  // ----------------------------------------------------------
-  const bootstrap = async () => {
-    if (!token) return;
+  const loadData = async () => {
+    if (!token || !canAccessLibrary) {
+      setLoading(false);
+      return;
+    }
 
     try {
       setLoading(true);
-      await Promise.all([loadArticles(), loadFavorites()]);
+
+      const articlesData = await listArticles(
+        token,
+        normalizeText(search),
+        category,
+        readerType
+      );
+
+      setArticles(articlesData);
+
+      if (!readOnlyMode) {
+        const favoritesData = await listFavoriteArticles(token);
+        setFavoriteIds(favoritesData.map((item) => item.id));
+      } else {
+        setFavoriteIds([]);
+      }
+    } catch (error: any) {
+      Alert.alert(
+        "Error",
+        error?.message || "No se pudo cargar la biblioteca."
+      );
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    bootstrap();
-  }, [token]);
-
-  // ----------------------------------------------------------
-  // Recarga manual
-  // ----------------------------------------------------------
-  const handleRefresh = async () => {
-    if (!token) return;
-
+  const refreshData = async () => {
     try {
       setRefreshing(true);
-      await Promise.all([loadArticles(), loadFavorites()]);
+      await loadData();
     } finally {
       setRefreshing(false);
     }
   };
 
-  // ----------------------------------------------------------
-  // Categorías disponibles
-  // ----------------------------------------------------------
-  const categories = useMemo(() => {
-    const values = Array.from(
-      new Set(
-        articles
-          .map((item) => item.category?.trim())
-          .filter(Boolean)
-      )
-    );
+  useEffect(() => {
+    loadData();
+  }, [token, canAccessLibrary, readOnlyMode]);
 
-    return ["Todas", ...values];
-  }, [articles]);
+  const handleSearch = async () => {
+    await loadData();
+  };
 
-  // ----------------------------------------------------------
-  // Tipos de lector disponibles
-  // ----------------------------------------------------------
-  const readerTypes = useMemo(() => {
-    const values = Array.from(
-      new Set(
-        articles
-          .map((item) => item.reader_type?.trim())
-          .filter(Boolean)
-      )
-    );
-
-    return ["Todos", ...values];
-  }, [articles]);
-
-  // ----------------------------------------------------------
-  // Aplicar filtros visuales
-  // ----------------------------------------------------------
-  const filteredArticles = useMemo(() => {
-    return articles.filter((article) => {
-      const matchesCategory =
-        selectedCategory === "Todas" ||
-        article.category === selectedCategory;
-
-      const matchesReader =
-        selectedReaderType === "Todos" ||
-        article.reader_type === selectedReaderType;
-
-      const text = searchText.trim().toLowerCase();
-
-      const matchesSearch =
-        !text ||
-        article.title.toLowerCase().includes(text) ||
-        article.short_description.toLowerCase().includes(text) ||
-        article.category.toLowerCase().includes(text) ||
-        article.reader_type.toLowerCase().includes(text);
-
-      const matchesFavorite =
-        viewMode === "todos" || favoriteIds.includes(article.id);
-
-      return matchesCategory && matchesReader && matchesSearch && matchesFavorite;
-    });
-  }, [
-    articles,
-    selectedCategory,
-    selectedReaderType,
-    searchText,
-    viewMode,
-    favoriteIds,
-  ]);
-
-  const featuredArticle = useMemo(() => {
-    return filteredArticles.length > 0 ? filteredArticles[0] : null;
-  }, [filteredArticles]);
-
-  // ----------------------------------------------------------
-  // Abrir detalle de artículo
-  // ----------------------------------------------------------
   const handleOpenArticle = async (articleId: number) => {
     if (!token) return;
 
-    const detail = await getArticleById(token, articleId);
-    setSelectedArticle(detail);
-    setDetailVisible(true);
+    try {
+      setActionLoading(true);
+
+      const article = await getArticleById(token, articleId);
+      setSelectedArticle(article);
+      setArticleModalVisible(true);
+    } catch (error: any) {
+      Alert.alert(
+        "Error",
+        error?.message || "No se pudo abrir el artículo."
+      );
+    } finally {
+      setActionLoading(false);
+    }
   };
 
-  // ----------------------------------------------------------
-  // Guardar o quitar favorito
-  // ----------------------------------------------------------
-  const handleToggleFavorite = async (articleId: number, nextState: boolean) => {
+  const handleToggleFavorite = async (
+    articleId: number,
+    nextState: boolean
+  ) => {
     if (!token) return;
+
+    if (readOnlyMode) {
+      return;
+    }
 
     try {
       setActionLoading(true);
 
       if (nextState) {
         await addFavoriteArticleRequest(token, articleId);
-        setFavoriteIds((prev) => Array.from(new Set([...prev, articleId])));
+        setFavoriteIds((prev) => [...new Set([...prev, articleId])]);
       } else {
         await removeFavoriteArticleRequest(token, articleId);
         setFavoriteIds((prev) => prev.filter((id) => id !== articleId));
       }
+    } catch (error: any) {
+      Alert.alert(
+        "Error",
+        error?.message || "No se pudo actualizar favoritos."
+      );
     } finally {
       setActionLoading(false);
     }
   };
 
-  // ----------------------------------------------------------
-  // Mandar artículo al chat del Amigo
-  // ----------------------------------------------------------
   const handleSendToFriend = async () => {
     if (!token || !selectedArticle) return;
+
+    if (readOnlyMode) {
+      return;
+    }
 
     try {
       setActionLoading(true);
 
       const result = await sendArticleToChatRequest(token, selectedArticle.id);
 
-      setDetailVisible(false);
+      setArticleModalVisible(false);
+      setSelectedArticle(null);
+
+      Alert.alert(
+        "Listo",
+        "El artículo fue enviado al chat del Amigo Imaginario."
+      );
 
       router.push({
         pathname: "/(tabs)/amigo",
         params: {
           conversationId: String(result.conversation_id),
-          refresh: String(Date.now()),
         },
       });
+    } catch (error: any) {
+      Alert.alert(
+        "Error",
+        error?.message || "No se pudo enviar el artículo al chat."
+      );
     } finally {
       setActionLoading(false);
     }
   };
+
+  if (!canAccessLibrary) {
+    return (
+      <View style={styles.centered}>
+        <Ionicons name="lock-closed-outline" size={42} color="#64748b" />
+        <Text style={styles.emptyTitle}>Sin permiso</Text>
+        <Text style={styles.emptyText}>
+          Tu cuenta no tiene acceso a la Biblioteca Inteligente.
+        </Text>
+      </View>
+    );
+  }
 
   if (loading) {
     return (
@@ -346,288 +285,223 @@ export default function BibliotecaScreen() {
   }
 
   return (
-    <>
+    <View style={styles.screen}>
       <ScrollView
-        style={styles.screen}
         contentContainerStyle={styles.content}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+          <RefreshControl refreshing={refreshing} onRefresh={refreshData} />
         }
-        showsVerticalScrollIndicator={false}
       >
         <View style={styles.heroCard}>
-          <View style={styles.heroIconCircle}>
-            <Ionicons name="library-outline" size={24} color="#ffffff" />
-          </View>
-
           <Text style={styles.heroTitle}>Biblioteca Inteligente</Text>
-          <Text style={styles.heroSubtitle}>
-            Explora información explicada de forma más clara, visual y amable.
+
+          <Text style={styles.heroText}>
+            {readOnlyMode
+              ? "Consulta artículos y material de apoyo. Tu cuenta de padre está en modo solo lectura."
+              : "Explora artículos, guarda favoritos y envía contenido al chat educativo."}
           </Text>
+
+          {readOnlyMode && (
+            <View style={styles.readOnlyBadge}>
+              <Ionicons name="eye-outline" size={16} color="#ffffff" />
+              <Text style={styles.readOnlyBadgeText}>Solo lectura</Text>
+            </View>
+          )}
         </View>
 
-        <View style={styles.searchCard}>
-          <View style={styles.searchInputWrapper}>
-            <Ionicons name="search-outline" size={18} color="#64748b" />
+        <View style={styles.filterCard}>
+          <Text style={styles.label}>Buscar artículo</Text>
+
+          <View style={styles.searchRow}>
             <TextInput
               style={styles.searchInput}
-              placeholder="Buscar por tema, categoría o lector..."
+              value={search}
+              onChangeText={setSearch}
+              placeholder="Buscar por tema, palabra clave..."
               placeholderTextColor="#94a3b8"
-              value={searchText}
-              onChangeText={setSearchText}
+              returnKeyType="search"
+              onSubmitEditing={handleSearch}
             />
+
+            <Pressable
+              style={styles.searchButton}
+              onPress={handleSearch}
+              disabled={actionLoading}
+            >
+              <Ionicons name="search" size={18} color="#ffffff" />
+            </Pressable>
           </View>
 
-          <Pressable style={styles.searchButton} onPress={loadArticles}>
-            <Text style={styles.searchButtonText}>Buscar</Text>
+          <Text style={styles.label}>Categoría</Text>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.chipsRow}
+            contentContainerStyle={styles.chipsContent}
+          >
+            {CATEGORY_OPTIONS.map((item) => {
+              const active = category === item;
+
+              return (
+                <Pressable
+                  key={item}
+                  style={[styles.chip, active && styles.chipActive]}
+                  onPress={() => setCategory(item)}
+                >
+                  <Text
+                    style={[
+                      styles.chipText,
+                      active && styles.chipTextActive,
+                    ]}
+                  >
+                    {item}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+
+          <Text style={styles.label}>Tipo de lector</Text>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.chipsRow}
+            contentContainerStyle={styles.chipsContent}
+          >
+            {READER_OPTIONS.map((item) => {
+              const active = readerType === item;
+
+              return (
+                <Pressable
+                  key={item}
+                  style={[styles.chip, active && styles.chipActive]}
+                  onPress={() => setReaderType(item)}
+                >
+                  <Text
+                    style={[
+                      styles.chipText,
+                      active && styles.chipTextActive,
+                    ]}
+                  >
+                    {item}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+
+          <Pressable style={styles.applyButton} onPress={handleSearch}>
+            <Text style={styles.applyButtonText}>Aplicar filtros</Text>
           </Pressable>
         </View>
 
-        <Text style={styles.filterTitle}>Vista</Text>
-        <View style={styles.modeRow}>
-          <Pressable
-            style={[
-              styles.modeChip,
-              viewMode === "todos" && styles.modeChipActive,
-            ]}
-            onPress={() => setViewMode("todos")}
-          >
-            <Text
-              style={[
-                styles.modeChipText,
-                viewMode === "todos" && styles.modeChipTextActive,
-              ]}
-            >
-              Todos
-            </Text>
-          </Pressable>
-
-          <Pressable
-            style={[
-              styles.modeChip,
-              viewMode === "favoritos" && styles.modeChipActive,
-            ]}
-            onPress={() => setViewMode("favoritos")}
-          >
-            <Ionicons
-              name={viewMode === "favoritos" ? "heart" : "heart-outline"}
-              size={14}
-              color={viewMode === "favoritos" ? "#ffffff" : "#334155"}
-            />
-            <Text
-              style={[
-                styles.modeChipText,
-                viewMode === "favoritos" && styles.modeChipTextActive,
-              ]}
-            >
-              Favoritos
-            </Text>
-          </Pressable>
-        </View>
-
-        <Text style={styles.filterTitle}>Categorías</Text>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.filterRow}
-          contentContainerStyle={styles.filterRowContent}
-        >
-          {categories.map((category) => {
-            const isActive = selectedCategory === category;
-
-            return (
-              <Pressable
-                key={category}
-                style={[
-                  styles.filterChip,
-                  isActive && styles.filterChipActive,
-                ]}
-                onPress={() => setSelectedCategory(category)}
-              >
-                <Text
-                  style={[
-                    styles.filterChipText,
-                    isActive && styles.filterChipTextActive,
-                  ]}
-                >
-                  {category}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-
-        <Text style={styles.filterTitle}>Pensado para</Text>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.filterRow}
-          contentContainerStyle={styles.filterRowContent}
-        >
-          {readerTypes.map((readerType) => {
-            const isActive = selectedReaderType === readerType;
-
-            return (
-              <Pressable
-                key={readerType}
-                style={[
-                  styles.filterChipSoft,
-                  isActive && styles.filterChipSoftActive,
-                ]}
-                onPress={() => setSelectedReaderType(readerType)}
-              >
-                <Text
-                  style={[
-                    styles.filterChipSoftText,
-                    isActive && styles.filterChipSoftTextActive,
-                  ]}
-                >
-                  {readerType}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-
-        <View style={styles.resultsRow}>
-          <Text style={styles.resultsText}>
-            {filteredArticles.length} artículo(s) encontrado(s)
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Artículos</Text>
+          <Text style={styles.sectionCounter}>
+            {filteredArticles.length} resultado(s)
           </Text>
         </View>
-
-        {featuredArticle && (
-          <Pressable
-            style={styles.featuredCard}
-            onPress={() => handleOpenArticle(featuredArticle.id)}
-          >
-            <View style={styles.featuredTopRow}>
-              <View style={styles.featuredBadge}>
-                <Text style={styles.featuredBadgeText}>Destacado</Text>
-              </View>
-
-              <Pressable
-                style={styles.favoriteIconButton}
-                onPress={() =>
-                  handleToggleFavorite(
-                    featuredArticle.id,
-                    !favoriteIds.includes(featuredArticle.id)
-                  )
-                }
-              >
-                <Ionicons
-                  name={
-                    favoriteIds.includes(featuredArticle.id)
-                      ? "heart"
-                      : "heart-outline"
-                  }
-                  size={20}
-                  color={
-                    favoriteIds.includes(featuredArticle.id)
-                      ? "#e6527a"
-                      : "#64748b"
-                  }
-                />
-              </Pressable>
-            </View>
-
-            <Text style={styles.featuredTitle}>{featuredArticle.title}</Text>
-            <Text style={styles.featuredDescription} numberOfLines={3}>
-              {featuredArticle.short_description}
-            </Text>
-
-            <View style={styles.featuredMetaRow}>
-              <Text style={styles.featuredMetaText}>
-                {featuredArticle.category}
-              </Text>
-              <Text style={styles.featuredMetaSeparator}>•</Text>
-              <Text style={styles.featuredMetaText}>
-                {featuredArticle.reader_type}
-              </Text>
-            </View>
-          </Pressable>
-        )}
-
-        <Text style={styles.sectionTitle}>Artículos</Text>
 
         {filteredArticles.length === 0 ? (
           <View style={styles.emptyCard}>
-            <Ionicons name="document-text-outline" size={28} color="#2f64b9" />
-            <Text style={styles.emptyTitle}>No encontré resultados</Text>
+            <Ionicons name="document-text-outline" size={38} color="#94a3b8" />
+            <Text style={styles.emptyTitle}>Sin artículos</Text>
             <Text style={styles.emptyText}>
-              Prueba con otra búsqueda o cambia los filtros.
+              No se encontraron artículos con los filtros seleccionados.
             </Text>
           </View>
         ) : (
-          <View style={styles.articleList}>
-            {filteredArticles.map((article) => (
-              <ArticleCard
-                key={article.id}
-                article={article}
-                isFavorite={favoriteIds.includes(article.id)}
-                onOpen={handleOpenArticle}
-                onToggleFavorite={handleToggleFavorite}
-              />
-            ))}
-          </View>
+          filteredArticles.map((article) => (
+            <ArticleCard
+              key={article.id}
+              article={article}
+              isFavorite={favoriteIds.includes(article.id)}
+              onOpen={handleOpenArticle}
+              onToggleFavorite={handleToggleFavorite}
+              showFavoriteButton={!readOnlyMode}
+            />
+          ))
         )}
       </ScrollView>
 
       <Modal
-        visible={detailVisible}
+        visible={articleModalVisible}
         animationType="slide"
         transparent
-        onRequestClose={() => setDetailVisible(false)}
+        onRequestClose={() => setArticleModalVisible(false)}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalSheet}>
-            <View style={styles.modalHandle} />
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <View style={styles.modalTitleBlock}>
+                <Text style={styles.modalTitle}>
+                  {selectedArticle?.title || "Artículo"}
+                </Text>
 
-            <View style={styles.modalHeaderRow}>
-              <Text style={styles.modalTitle}>Detalle del artículo</Text>
+                <View style={styles.badgesRow}>
+                  {!!selectedArticle?.category && (
+                    <Text style={styles.badge}>{selectedArticle.category}</Text>
+                  )}
 
-              <Pressable onPress={() => setDetailVisible(false)}>
-                <Ionicons name="close" size={22} color="#334155" />
+                  {!!selectedArticle?.reader_type && (
+                    <Text style={styles.badgeSecondary}>
+                      {selectedArticle.reader_type}
+                    </Text>
+                  )}
+                </View>
+              </View>
+
+              <Pressable
+                style={styles.closeButton}
+                onPress={() => setArticleModalVisible(false)}
+              >
+                <Ionicons name="close" size={24} color="#0f172a" />
               </Pressable>
             </View>
 
-            {selectedArticle ? (
-              <ScrollView
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={styles.modalContent}
-              >
-                <Text style={styles.detailTitle}>{selectedArticle.title}</Text>
-
-                <View style={styles.detailBadgesRow}>
-                  <View style={styles.detailBadge}>
-                    <Text style={styles.detailBadgeText}>
-                      {selectedArticle.category}
-                    </Text>
-                  </View>
-
-                  <View style={styles.detailBadgeSoft}>
-                    <Text style={styles.detailBadgeSoftText}>
-                      {selectedArticle.reader_type}
-                    </Text>
-                  </View>
-                </View>
-
-                <Text style={styles.detailIntro}>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.modalContent}
+            >
+              {!!selectedArticle?.short_description && (
+                <Text style={styles.modalDescription}>
                   {selectedArticle.short_description}
                 </Text>
+              )}
 
-                <Text style={styles.detailContent}>
-                  {selectedArticle.content}
-                </Text>
+              <Text style={styles.articleContent}>
+                {selectedArticle?.content || ""}
+              </Text>
 
-                <View style={styles.detailActionsRow}>
+              {readOnlyMode && (
+                <View style={styles.noticeBox}>
+                  <Ionicons
+                    name="information-circle-outline"
+                    size={20}
+                    color="#2f64b9"
+                  />
+                  <Text style={styles.noticeText}>
+                    Estás viendo este artículo en modo solo lectura.
+                  </Text>
+                </View>
+              )}
+
+              {!readOnlyMode && selectedArticle && (
+                <>
                   <Pressable
-                    style={styles.favoriteActionButton}
+                    style={[
+                      styles.favoriteButton,
+                      actionLoading && styles.disabledButton,
+                    ]}
                     onPress={() =>
                       handleToggleFavorite(
                         selectedArticle.id,
                         !favoriteIds.includes(selectedArticle.id)
                       )
                     }
+                    disabled={actionLoading}
                   >
                     <Ionicons
                       name={
@@ -636,39 +510,39 @@ export default function BibliotecaScreen() {
                           : "heart-outline"
                       }
                       size={18}
-                      color="#e6527a"
+                      color="#ffffff"
                     />
-                    <Text style={styles.favoriteActionText}>
+                    <Text style={styles.favoriteButtonText}>
                       {favoriteIds.includes(selectedArticle.id)
-                        ? "Quitar favorito"
-                        : "Guardar favorito"}
+                        ? "Quitar de favoritos"
+                        : "Guardar en favoritos"}
                     </Text>
                   </Pressable>
 
                   <Pressable
                     style={[
-                      styles.sendToFriendButton,
-                      actionLoading && styles.sendToFriendButtonDisabled,
+                      styles.sendToChatButton,
+                      actionLoading && styles.disabledButton,
                     ]}
                     onPress={handleSendToFriend}
                     disabled={actionLoading}
                   >
-                    <Ionicons name="chatbubble-ellipses-outline" size={18} color="#ffffff" />
-                    <Text style={styles.sendToFriendText}>
-                      {actionLoading ? "Enviando..." : "Hablar con Amigo"}
+                    <Ionicons
+                      name="chatbubble-ellipses-outline"
+                      size={18}
+                      color="#ffffff"
+                    />
+                    <Text style={styles.sendToChatButtonText}>
+                      Llevar al chat educativo
                     </Text>
                   </Pressable>
-                </View>
-              </ScrollView>
-            ) : (
-              <View style={styles.centered}>
-                <ActivityIndicator size="small" color="#2f64b9" />
-              </View>
-            )}
+                </>
+              )}
+            </ScrollView>
           </View>
         </View>
       </Modal>
-    </>
+    </View>
   );
 }
 
@@ -679,280 +553,193 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 16,
-    paddingBottom: 28,
+    paddingBottom: 32,
   },
   centered: {
     flex: 1,
     backgroundColor: "#f5f7fb",
     justifyContent: "center",
     alignItems: "center",
-    padding: 20,
+    padding: 22,
   },
   loadingText: {
-    marginTop: 12,
     color: "#64748b",
-    fontSize: 15,
+    marginTop: 10,
   },
   heroCard: {
     backgroundColor: "#2f64b9",
-    borderRadius: 24,
+    borderRadius: 22,
     padding: 20,
-    marginBottom: 16,
-  },
-  heroIconCircle: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: "#4a7cd0",
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 12,
+    marginBottom: 14,
   },
   heroTitle: {
     color: "#ffffff",
     fontSize: 24,
-    fontWeight: "800",
+    fontWeight: "900",
   },
-  heroSubtitle: {
-    marginTop: 8,
+  heroText: {
     color: "#dbeafe",
-    lineHeight: 21,
-    fontSize: 14,
+    marginTop: 8,
+    lineHeight: 20,
   },
-  searchCard: {
-    backgroundColor: "#ffffff",
-    borderRadius: 18,
-    padding: 14,
-    marginBottom: 16,
-  },
-  searchInputWrapper: {
+  readOnlyBadge: {
+    alignSelf: "flex-start",
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#f8fafc",
-    borderRadius: 14,
+    gap: 7,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    borderRadius: 999,
     paddingHorizontal: 12,
-    paddingVertical: 12,
+    paddingVertical: 7,
+    marginTop: 12,
+  },
+  readOnlyBadgeText: {
+    color: "#ffffff",
+    fontWeight: "900",
+  },
+  filterCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 14,
+  },
+  label: {
+    color: "#334155",
+    fontWeight: "900",
+    marginBottom: 8,
+    marginTop: 6,
+  },
+  searchRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 10,
   },
   searchInput: {
     flex: 1,
-    marginLeft: 8,
-    color: "#111827",
-    fontSize: 15,
+    backgroundColor: "#f8fafc",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: "#0f172a",
   },
   searchButton: {
-    marginTop: 10,
-    backgroundColor: "#2f64b9",
+    width: 48,
     borderRadius: 14,
+    backgroundColor: "#2f64b9",
+    justifyContent: "center",
     alignItems: "center",
-    paddingVertical: 12,
   },
-  searchButtonText: {
-    color: "#ffffff",
-    fontWeight: "800",
-  },
-  filterTitle: {
-    color: "#334155",
-    fontWeight: "800",
-    fontSize: 15,
+  chipsRow: {
+    maxHeight: 44,
     marginBottom: 8,
-    marginTop: 4,
   },
-  modeRow: {
-    flexDirection: "row",
-    gap: 10,
-    marginBottom: 12,
-  },
-  modeChip: {
-    backgroundColor: "#eef2f7",
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  modeChipActive: {
-    backgroundColor: "#2f64b9",
-  },
-  modeChipText: {
-    color: "#334155",
-    fontWeight: "700",
-  },
-  modeChipTextActive: {
-    color: "#ffffff",
-  },
-  filterRow: {
-    maxHeight: 48,
-    marginBottom: 12,
-  },
-  filterRowContent: {
+  chipsContent: {
     gap: 8,
-    paddingRight: 8,
+    paddingRight: 10,
   },
-  filterChip: {
-    backgroundColor: "#e8eefb",
+  chip: {
+    backgroundColor: "#e9eef8",
     borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 13,
+    paddingVertical: 9,
   },
-  filterChipActive: {
+  chipActive: {
     backgroundColor: "#2f64b9",
   },
-  filterChipText: {
-    color: "#2f64b9",
-    fontWeight: "700",
-  },
-  filterChipTextActive: {
-    color: "#ffffff",
-  },
-  filterChipSoft: {
-    backgroundColor: "#eef2f7",
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  filterChipSoftActive: {
-    backgroundColor: "#0f172a",
-  },
-  filterChipSoftText: {
+  chipText: {
     color: "#334155",
-    fontWeight: "700",
-  },
-  filterChipSoftTextActive: {
-    color: "#ffffff",
-  },
-  resultsRow: {
-    marginBottom: 12,
-  },
-  resultsText: {
-    color: "#64748b",
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  featuredCard: {
-    backgroundColor: "#ffffff",
-    borderRadius: 20,
-    padding: 18,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: "#dbeafe",
-  },
-  featuredTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  featuredBadge: {
-    backgroundColor: "#e8f0ff",
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  featuredBadgeText: {
-    color: "#2f64b9",
     fontWeight: "800",
     fontSize: 12,
   },
-  featuredTitle: {
-    marginTop: 14,
-    color: "#0f172a",
-    fontSize: 19,
-    fontWeight: "800",
-    lineHeight: 25,
+  chipTextActive: {
+    color: "#ffffff",
   },
-  featuredDescription: {
-    marginTop: 10,
-    color: "#475569",
-    lineHeight: 21,
-  },
-  featuredMetaRow: {
-    flexDirection: "row",
+  applyButton: {
+    backgroundColor: "#0f172a",
+    borderRadius: 14,
+    paddingVertical: 13,
     alignItems: "center",
-    marginTop: 14,
+    marginTop: 8,
   },
-  featuredMetaText: {
-    color: "#64748b",
-    fontWeight: "700",
-    fontSize: 13,
+  applyButtonText: {
+    color: "#ffffff",
+    fontWeight: "900",
   },
-  featuredMetaSeparator: {
-    color: "#94a3b8",
-    marginHorizontal: 8,
+  sectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
   },
   sectionTitle: {
     color: "#0f172a",
-    fontSize: 18,
-    fontWeight: "800",
-    marginBottom: 12,
+    fontSize: 19,
+    fontWeight: "900",
   },
-  articleList: {
-    gap: 12,
+  sectionCounter: {
+    color: "#64748b",
+    fontWeight: "700",
   },
   articleCard: {
     backgroundColor: "#ffffff",
     borderRadius: 18,
     padding: 16,
+    marginBottom: 12,
   },
-  articleHeaderRow: {
+  articleHeader: {
     flexDirection: "row",
+    gap: 10,
     alignItems: "flex-start",
   },
-  articleIconCircle: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: "#eaf0fb",
-    justifyContent: "center",
-    alignItems: "center",
-    marginRight: 12,
-  },
-  articleHeaderText: {
+  articleTitleBlock: {
     flex: 1,
   },
   articleTitle: {
     color: "#0f172a",
-    fontSize: 16,
-    fontWeight: "800",
+    fontSize: 17,
+    fontWeight: "900",
     lineHeight: 22,
   },
-  articleCategory: {
-    marginTop: 4,
-    color: "#64748b",
-    fontSize: 13,
-    fontWeight: "600",
+  badgesRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 7,
+    marginTop: 8,
+  },
+  badge: {
+    backgroundColor: "#dbeafe",
+    color: "#1e3a8a",
+    borderRadius: 999,
+    overflow: "hidden",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  badgeSecondary: {
+    backgroundColor: "#f1f5f9",
+    color: "#475569",
+    borderRadius: 999,
+    overflow: "hidden",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    fontSize: 12,
+    fontWeight: "800",
   },
   favoriteIconButton: {
-    padding: 4,
-    marginLeft: 8,
+    backgroundColor: "#f8fafc",
+    borderRadius: 999,
+    padding: 9,
   },
   articleDescription: {
-    marginTop: 12,
-    color: "#475569",
+    color: "#64748b",
+    marginTop: 10,
     lineHeight: 20,
   },
-  articleFooterRow: {
-    marginTop: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  readerBadge: {
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  readerBadgeText: {
-    fontWeight: "800",
-    fontSize: 12,
-  },
-  openRow: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  openText: {
+  openArticleText: {
     color: "#2f64b9",
-    fontWeight: "800",
-    marginRight: 2,
+    fontWeight: "900",
+    marginTop: 12,
   },
   emptyCard: {
     backgroundColor: "#ffffff",
@@ -961,132 +748,108 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   emptyTitle: {
-    marginTop: 10,
     color: "#0f172a",
-    fontSize: 16,
-    fontWeight: "800",
+    fontSize: 19,
+    fontWeight: "900",
+    marginTop: 10,
+    textAlign: "center",
   },
   emptyText: {
-    marginTop: 6,
     color: "#64748b",
     textAlign: "center",
     lineHeight: 20,
+    marginTop: 8,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: "#00000044",
+    backgroundColor: "rgba(15,23,42,0.45)",
     justifyContent: "flex-end",
   },
-  modalSheet: {
+  modalCard: {
     backgroundColor: "#ffffff",
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    maxHeight: "88%",
-    paddingHorizontal: 18,
-    paddingTop: 10,
-    paddingBottom: 18,
+    padding: 18,
+    maxHeight: "90%",
   },
-  modalHandle: {
-    width: 54,
-    height: 6,
-    borderRadius: 999,
-    backgroundColor: "#d0d7e2",
-    alignSelf: "center",
-    marginBottom: 14,
-  },
-  modalHeaderRow: {
+  modalHeader: {
     flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 12,
+    alignItems: "flex-start",
+    gap: 10,
+    marginBottom: 10,
+  },
+  modalTitleBlock: {
+    flex: 1,
   },
   modalTitle: {
     color: "#0f172a",
-    fontWeight: "800",
-    fontSize: 18,
+    fontSize: 20,
+    fontWeight: "900",
+    lineHeight: 25,
+  },
+  closeButton: {
+    backgroundColor: "#f8fafc",
+    borderRadius: 999,
+    padding: 8,
   },
   modalContent: {
-    paddingBottom: 16,
+    paddingBottom: 18,
   },
-  detailTitle: {
-    color: "#0f172a",
-    fontSize: 22,
-    fontWeight: "800",
-    lineHeight: 28,
-  },
-  detailBadgesRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    marginTop: 12,
-    marginBottom: 14,
-  },
-  detailBadge: {
-    backgroundColor: "#e8f0ff",
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  detailBadgeText: {
-    color: "#2f64b9",
-    fontWeight: "800",
-    fontSize: 12,
-  },
-  detailBadgeSoft: {
-    backgroundColor: "#eef2f7",
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  detailBadgeSoftText: {
-    color: "#334155",
-    fontWeight: "800",
-    fontSize: 12,
-  },
-  detailIntro: {
-    color: "#334155",
-    fontWeight: "700",
-    lineHeight: 22,
-    marginBottom: 14,
-  },
-  detailContent: {
+  modalDescription: {
     color: "#475569",
-    lineHeight: 23,
+    lineHeight: 21,
+    marginBottom: 14,
+    fontWeight: "700",
+  },
+  articleContent: {
+    color: "#0f172a",
     fontSize: 15,
+    lineHeight: 23,
   },
-  detailActionsRow: {
-    marginTop: 18,
-    gap: 12,
-  },
-  favoriteActionButton: {
-    backgroundColor: "#fff0f4",
+  noticeBox: {
+    backgroundColor: "#eff6ff",
     borderRadius: 14,
-    paddingVertical: 13,
-    paddingHorizontal: 14,
+    padding: 13,
+    marginTop: 18,
     flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 9,
+  },
+  noticeText: {
+    flex: 1,
+    color: "#1e3a8a",
+    lineHeight: 19,
+    fontWeight: "700",
+  },
+  favoriteButton: {
+    backgroundColor: "#e6527a",
+    borderRadius: 14,
+    paddingVertical: 14,
     alignItems: "center",
     justifyContent: "center",
+    marginTop: 18,
+    flexDirection: "row",
     gap: 8,
   },
-  favoriteActionText: {
-    color: "#e6527a",
-    fontWeight: "800",
+  favoriteButtonText: {
+    color: "#ffffff",
+    fontWeight: "900",
   },
-  sendToFriendButton: {
+  sendToChatButton: {
     backgroundColor: "#2f64b9",
     borderRadius: 14,
     paddingVertical: 14,
-    paddingHorizontal: 14,
-    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    marginTop: 10,
+    flexDirection: "row",
     gap: 8,
   },
-  sendToFriendButtonDisabled: {
-    opacity: 0.6,
-  },
-  sendToFriendText: {
+  sendToChatButtonText: {
     color: "#ffffff",
-    fontWeight: "800",
+    fontWeight: "900",
+  },
+  disabledButton: {
+    opacity: 0.55,
   },
 });

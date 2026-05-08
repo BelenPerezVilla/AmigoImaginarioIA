@@ -26,6 +26,20 @@ from database.support_db import (
     search_support_contacts_by_text,
 )
 from mobile_backend.app.core.deps import get_current_user
+from database.chat_db import (
+    get_imaginary_friend_profile,
+    get_user_by_id,
+    update_friend_name,
+    update_friend_profile,
+    update_imaginary_friend_profile,
+)
+from database.support_db import parent_can_view_child
+from mobile_backend.app.schemas import (
+    UpdateFriendPreferencesRequest,
+    UpdateImaginaryFriendAvatarRequest,
+)
+
+
 
 router = APIRouter(prefix="/api/support", tags=["support"])
 
@@ -466,3 +480,128 @@ def get_chat_contact_recommendation(
             "una valoración psicológica, médica ni terapéutica profesional."
         ),
     )
+
+# ============================================================
+# Configuración del amigo imaginario del hijo
+# ============================================================
+
+def ensure_can_manage_child_friend(
+    current_user: dict,
+    child_user_id: int,
+) -> None:
+    role = get_current_role(current_user)
+
+    if role == "superadmin":
+        return
+
+    if role in {"parent_admin", "guest_parent"}:
+        if parent_can_view_child(current_user["id"], child_user_id):
+            return
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="No tienes permiso para configurar el amigo imaginario de este usuario.",
+    )
+
+
+def build_child_friend_profile(child_user_id: int) -> dict:
+    user = get_user_by_id(child_user_id)
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado.",
+        )
+
+    avatar = get_imaginary_friend_profile(child_user_id)
+
+    return {
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "display_name": user["display_name"],
+            "role": user.get("role", ""),
+            "friend_name": user.get("friend_name", "Lumi") or "Lumi",
+            "favorite_color": user.get("favorite_color", "") or "",
+            "favorite_activity": user.get("favorite_activity", "") or "",
+            "encouragement_style": user.get("encouragement_style", "") or "",
+            "preferred_comfort": user.get("preferred_comfort", "cuentos") or "cuentos",
+        },
+        "avatar": {
+            "face_shape": avatar.get("face_shape", "redondo") or "redondo",
+            "primary_color": avatar.get("primary_color", "azul") or "azul",
+            "hair_style": avatar.get("hair_style", "corto") or "corto",
+            "hair_color": avatar.get("hair_color", "castano") or "castano",
+            "eye_style": avatar.get("eye_style", "felices") or "felices",
+            "mouth_style": avatar.get("mouth_style", "sonrisa") or "sonrisa",
+            "accessory": avatar.get("accessory", "estrella") or "estrella",
+            "background_style": avatar.get("background_style", "cielo") or "cielo",
+        },
+    }
+
+
+@router.get("/children/{child_user_id}/friend-profile")
+def get_child_friend_profile(
+    child_user_id: int,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    require_parent_or_superadmin(current_user)
+    ensure_can_manage_child_friend(current_user, child_user_id)
+
+    return build_child_friend_profile(child_user_id)
+
+
+@router.patch("/children/{child_user_id}/friend-preferences")
+def update_child_friend_preferences(
+    child_user_id: int,
+    payload: UpdateFriendPreferencesRequest,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    require_parent_or_superadmin(current_user)
+    ensure_can_manage_child_friend(current_user, child_user_id)
+
+    try:
+        update_friend_name(
+            user_id=child_user_id,
+            friend_name=payload.friend_name,
+        )
+
+        update_friend_profile(
+            user_id=child_user_id,
+            favorite_color=payload.favorite_color,
+            favorite_activity=payload.favorite_activity,
+            encouragement_style=payload.encouragement_style,
+            preferred_comfort=payload.preferred_comfort,
+        )
+
+        return build_child_friend_profile(child_user_id)
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
+
+
+@router.patch("/children/{child_user_id}/avatar")
+def update_child_avatar(
+    child_user_id: int,
+    payload: UpdateImaginaryFriendAvatarRequest,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    require_parent_or_superadmin(current_user)
+    ensure_can_manage_child_friend(current_user, child_user_id)
+
+    update_imaginary_friend_profile(
+        user_id=child_user_id,
+        face_shape=payload.face_shape,
+        primary_color=payload.primary_color,
+        hair_style=payload.hair_style,
+        hair_color=payload.hair_color,
+        eye_style=payload.eye_style,
+        mouth_style=payload.mouth_style,
+        accessory=payload.accessory,
+        background_style=payload.background_style,
+    )
+
+    return build_child_friend_profile(child_user_id)
