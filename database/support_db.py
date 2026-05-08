@@ -983,3 +983,98 @@ def list_recommended_contacts_for_request(request_id: int) -> list[dict]:
     connection.close()
 
     return rows_to_list(rows)
+
+# ------------------------------------------------------------
+# Buscar contactos recomendados por texto
+# ------------------------------------------------------------
+def search_support_contacts_by_text(
+    text: str,
+    limit: int = 5,
+) -> list[dict]:
+    """
+    Busca contactos activos usando palabras dentro de:
+    - nombre
+    - especialidad
+    - organización
+    - notas
+    """
+    text_clean = str(text or "").strip().lower()
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    if not text_clean:
+        cursor.execute("""
+            SELECT *
+            FROM support_contacts
+            WHERE is_active = 1
+            ORDER BY specialty ASC, name ASC
+            LIMIT ?;
+        """, (limit,))
+
+        rows = cursor.fetchall()
+        connection.close()
+
+        return rows_to_list(rows)
+
+    words = [
+        word.strip()
+        for word in text_clean.replace(",", " ").replace(".", " ").split()
+        if len(word.strip()) >= 4
+    ]
+
+    if not words:
+        cursor.execute("""
+            SELECT *
+            FROM support_contacts
+            WHERE is_active = 1
+            ORDER BY specialty ASC, name ASC
+            LIMIT ?;
+        """, (limit,))
+
+        rows = cursor.fetchall()
+        connection.close()
+
+        return rows_to_list(rows)
+
+    conditions = []
+    params = []
+
+    for word in words[:8]:
+        like_value = f"%{word}%"
+
+        conditions.append("""
+            (
+                LOWER(name) LIKE ?
+                OR LOWER(specialty) LIKE ?
+                OR LOWER(organization) LIKE ?
+                OR LOWER(notes) LIKE ?
+            )
+        """)
+
+        params.extend([
+            like_value,
+            like_value,
+            like_value,
+            like_value,
+        ])
+
+    query = f"""
+        SELECT DISTINCT *
+        FROM support_contacts
+        WHERE is_active = 1
+          AND (
+            {' OR '.join(conditions)}
+          )
+        ORDER BY specialty ASC, name ASC
+        LIMIT ?;
+    """
+
+    params.append(limit)
+
+    cursor.execute(query, params)
+
+    rows = cursor.fetchall()
+    connection.close()
+
+    return rows_to_list(rows)

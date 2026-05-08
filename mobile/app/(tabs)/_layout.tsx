@@ -1,6 +1,6 @@
 // ============================================================
 // mobile/app/(tabs)/_layout.tsx
-// Layout protegido por sesión con navegación según rol.
+// Layout protegido por sesión y navegación por rol.
 // ============================================================
 
 import React from "react";
@@ -16,7 +16,31 @@ export default function TabsLayout() {
     return <Redirect href="/(auth)/login" />;
   }
 
-  const permissions = user?.permissions;
+  const role = String(user?.role || "").trim();
+
+  const isSuperadmin = role === "superadmin" || Boolean(user?.is_admin);
+  const isParent = role === "parent_admin" || role === "guest_parent";
+  const isChild = role === "child" || role === "guest_child";
+
+  const canShowAmigo =
+    isSuperadmin ||
+    isParent ||
+    isChild ||
+    Boolean(user?.permissions?.can_access_amigo);
+
+  const canShowBiblioteca =
+    isSuperadmin ||
+    isParent ||
+    Boolean(user?.permissions?.can_access_biblioteca);
+
+  const canShowPadres =
+    isSuperadmin ||
+    isParent ||
+    Boolean(user?.permissions?.can_access_modo_padres);
+
+  const canShowAdmin =
+    isSuperadmin ||
+    Boolean(user?.permissions?.can_access_admin);
 
   return (
     <Tabs
@@ -40,7 +64,7 @@ export default function TabsLayout() {
         name="amigo"
         options={{
           title: "Amigo",
-          href: permissions?.can_access_amigo === false ? null : undefined,
+          href: canShowAmigo ? undefined : null,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="chatbubble-ellipses" color={color} size={size} />
           ),
@@ -51,7 +75,7 @@ export default function TabsLayout() {
         name="biblioteca"
         options={{
           title: "Biblioteca",
-          href: permissions?.can_access_biblioteca ? undefined : null,
+          href: canShowBiblioteca ? undefined : null,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="library" color={color} size={size} />
           ),
@@ -62,9 +86,20 @@ export default function TabsLayout() {
         name="padres"
         options={{
           title: "Padres",
-          href: permissions?.can_access_modo_padres ? undefined : null,
+          href: canShowPadres ? undefined : null,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="people" color={color} size={size} />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="admin"
+        options={{
+          title: "Admin",
+          href: canShowAdmin ? undefined : null,
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="settings" color={color} size={size} />
           ),
         }}
       />

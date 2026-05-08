@@ -1,87 +1,96 @@
 # ============================================================
 # mobile_backend/app/routers/admin.py
-# Endpoints del panel superadmin:
-# - usuarios y roles
-# - cuentas guest
+# Administración móvil para superadmin:
+# - usuarios
+# - roles
 # - tokens
-# - personalización del amigo de un niño
+# - cuentas guest
 # ============================================================
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 
 from database.access_control import (
+    assert_superadmin,
     create_guest_user,
     deactivate_guest_user,
     extend_guest_user,
-    get_remaining_guest_text,
     list_guest_users,
     list_users_with_access,
     set_user_token_policy,
     update_user_role,
 )
-from database.chat_db import (
-    get_user_by_id,
-    update_friend_name,
-    update_friend_profile,
-    update_imaginary_friend_profile,
-    get_imaginary_friend_profile,
-)
-from mobile_backend.app.core.deps import get_current_superadmin
-from mobile_backend.app.routers.auth import build_user_out, build_avatar_out
-from mobile_backend.app.schemas import (
-    AdminUserOut,
-    CreateGuestRequest,
-    ExtendGuestRequest,
-    GenericMessageOut,
-    ImaginaryFriendAvatarOut,
-    RoleUpdateRequest,
-    TokenPolicyRequest,
-    TokenStatusOut,
-    UpdateFriendPreferencesRequest,
-    UpdateImaginaryFriendAvatarRequest,
-    UserOut,
-)
+from mobile_backend.app.core.deps import get_current_user
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
-# ------------------------------------------------------------
-# Convertir usuario admin a salida enriquecida
-# ------------------------------------------------------------
-def build_admin_user_out(user: dict) -> AdminUserOut:
-    """
-    Convierte dict de usuario a AdminUserOut.
-    """
-    base_user = UserOut(**build_user_out(user).model_dump())
+# ============================================================
+# Schemas
+# ============================================================
 
-    return AdminUserOut(
-        **base_user.model_dump(),
-        guest_created_by=user.get("guest_created_by"),
-        remaining_guest_time=get_remaining_guest_text(user.get("guest_expires_at")),
-    )
+class UpdateRoleRequest(BaseModel):
+    role: str = Field(min_length=1)
 
 
-# ------------------------------------------------------------
-# Listar usuarios
-# ------------------------------------------------------------
-@router.get("/users", response_model=list[AdminUserOut])
-def get_users(current_user: dict = Depends(get_current_superadmin)) -> list[AdminUserOut]:
-    users = list_users_with_access(limit=500)
-    return [build_admin_user_out(user) for user in users]
+class UpdateTokensRequest(BaseModel):
+    daily_limit: int = Field(ge=0)
+    reset_interval_hours: int = Field(default=24, ge=1)
+    low_threshold: int = Field(default=5, ge=0)
 
 
-# ------------------------------------------------------------
-# Cambiar rol de usuario permanente
-# ------------------------------------------------------------
-@router.patch("/users/{user_id}/role", response_model=AdminUserOut)
-def change_user_role(
-    user_id: int,
-    payload: RoleUpdateRequest,
-    current_user: dict = Depends(get_current_superadmin),
-) -> AdminUserOut:
+class CreateGuestRequest(BaseModel):
+    username: str = Field(min_length=3)
+    password: str = Field(min_length=8)
+    display_name: str = Field(min_length=1)
+    guest_type: str = Field(min_length=1)
+    hours: int = Field(default=4, ge=1)
+    token_limit: int = Field(default=10, ge=0)
+
+
+class ExtendGuestRequest(BaseModel):
+    extra_hours: int = Field(default=1, ge=1)
+
+
+# ============================================================
+# Helper
+# ============================================================
+
+def require_superadmin(current_user: dict) -> None:
     try:
-        updated = update_user_role(user_id=user_id, role=payload.role)
-        return build_admin_user_out(updated)
+        assert_superadmin(current_user)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(error),
+        ) from error
+
+
+# ============================================================
+# Usuarios
+# ============================================================
+
+@router.get("/users")
+def admin_list_users(
+    current_user: dict = Depends(get_current_user),
+) -> list[dict]:
+    require_superadmin(current_user)
+    return list_users_with_access(limit=500)
+
+
+@router.patch("/users/{user_id}/role")
+def admin_update_user_role(
+    user_id: int,
+    payload: UpdateRoleRequest,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    require_superadmin(current_user)
+
+    try:
+        return update_user_role(
+            user_id=user_id,
+            role=payload.role,
+        )
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -89,23 +98,21 @@ def change_user_role(
         ) from error
 
 
-# ------------------------------------------------------------
-# Actualizar tokens de un usuario
-# ------------------------------------------------------------
-@router.patch("/users/{user_id}/tokens", response_model=TokenStatusOut)
-def change_user_tokens(
+@router.patch("/users/{user_id}/tokens")
+def admin_update_user_tokens(
     user_id: int,
-    payload: TokenPolicyRequest,
-    current_user: dict = Depends(get_current_superadmin),
-) -> TokenStatusOut:
+    payload: UpdateTokensRequest,
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    require_superadmin(current_user)
+
     try:
-        status_data = set_user_token_policy(
+        return set_user_token_policy(
             user_id=user_id,
             daily_limit=payload.daily_limit,
             reset_interval_hours=payload.reset_interval_hours,
             low_threshold=payload.low_threshold,
         )
-        return TokenStatusOut(**status_data)
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -113,16 +120,27 @@ def change_user_tokens(
         ) from error
 
 
-# ------------------------------------------------------------
-# Crear cuenta guest temporal
-# ------------------------------------------------------------
-@router.post("/guests", response_model=AdminUserOut)
-def create_guest(
+# ============================================================
+# Guests
+# ============================================================
+
+@router.get("/guests")
+def admin_list_guests(
+    current_user: dict = Depends(get_current_user),
+) -> list[dict]:
+    require_superadmin(current_user)
+    return list_guest_users(limit=500)
+
+
+@router.post("/guests")
+def admin_create_guest(
     payload: CreateGuestRequest,
-    current_user: dict = Depends(get_current_superadmin),
-) -> AdminUserOut:
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    require_superadmin(current_user)
+
     try:
-        created = create_guest_user(
+        return create_guest_user(
             created_by_user_id=current_user["id"],
             username=payload.username,
             password=payload.password,
@@ -131,7 +149,6 @@ def create_guest(
             hours=payload.hours,
             token_limit=payload.token_limit,
         )
-        return build_admin_user_out(created)
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -139,27 +156,19 @@ def create_guest(
         ) from error
 
 
-# ------------------------------------------------------------
-# Listar cuentas guest
-# ------------------------------------------------------------
-@router.get("/guests", response_model=list[AdminUserOut])
-def get_guests(current_user: dict = Depends(get_current_superadmin)) -> list[AdminUserOut]:
-    guests = list_guest_users(limit=500)
-    return [build_admin_user_out(guest) for guest in guests]
-
-
-# ------------------------------------------------------------
-# Extender cuenta guest
-# ------------------------------------------------------------
-@router.patch("/guests/{user_id}/extend", response_model=AdminUserOut)
-def extend_guest(
+@router.patch("/guests/{user_id}/extend")
+def admin_extend_guest(
     user_id: int,
     payload: ExtendGuestRequest,
-    current_user: dict = Depends(get_current_superadmin),
-) -> AdminUserOut:
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    require_superadmin(current_user)
+
     try:
-        updated = extend_guest_user(user_id=user_id, extra_hours=payload.extra_hours)
-        return build_admin_user_out(updated)
+        return extend_guest_user(
+            user_id=user_id,
+            extra_hours=payload.extra_hours,
+        )
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -167,90 +176,17 @@ def extend_guest(
         ) from error
 
 
-# ------------------------------------------------------------
-# Desactivar cuenta guest
-# ------------------------------------------------------------
-@router.patch("/guests/{user_id}/deactivate", response_model=AdminUserOut)
-def deactivate_guest(
+@router.patch("/guests/{user_id}/deactivate")
+def admin_deactivate_guest(
     user_id: int,
-    current_user: dict = Depends(get_current_superadmin),
-) -> AdminUserOut:
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    require_superadmin(current_user)
+
     try:
-        updated = deactivate_guest_user(user_id=user_id)
-        return build_admin_user_out(updated)
+        return deactivate_guest_user(user_id)
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(error),
         ) from error
-
-
-# ------------------------------------------------------------
-# Personalizar preferencias del amigo de un usuario
-# ------------------------------------------------------------
-@router.patch("/users/{user_id}/friend/preferences", response_model=UserOut)
-def update_child_friend_preferences(
-    user_id: int,
-    payload: UpdateFriendPreferencesRequest,
-    current_user: dict = Depends(get_current_superadmin),
-) -> UserOut:
-    target = get_user_by_id(user_id)
-
-    if not target:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado.",
-        )
-
-    update_friend_name(user_id=user_id, friend_name=payload.friend_name)
-    update_friend_profile(
-        user_id=user_id,
-        favorite_color=payload.favorite_color,
-        favorite_activity=payload.favorite_activity,
-        encouragement_style=payload.encouragement_style,
-        preferred_comfort=payload.preferred_comfort,
-    )
-
-    updated = get_user_by_id(user_id)
-    return build_user_out(updated)
-
-
-# ------------------------------------------------------------
-# Personalizar avatar del amigo de un usuario
-# ------------------------------------------------------------
-@router.patch("/users/{user_id}/friend/avatar", response_model=ImaginaryFriendAvatarOut)
-def update_child_friend_avatar(
-    user_id: int,
-    payload: UpdateImaginaryFriendAvatarRequest,
-    current_user: dict = Depends(get_current_superadmin),
-) -> ImaginaryFriendAvatarOut:
-    target = get_user_by_id(user_id)
-
-    if not target:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado.",
-        )
-
-    update_imaginary_friend_profile(
-        user_id=user_id,
-        face_shape=payload.face_shape,
-        primary_color=payload.primary_color,
-        hair_style=payload.hair_style,
-        hair_color=payload.hair_color,
-        eye_style=payload.eye_style,
-        mouth_style=payload.mouth_style,
-        accessory=payload.accessory,
-        background_style=payload.background_style,
-    )
-
-    profile = get_imaginary_friend_profile(user_id)
-    return build_avatar_out(profile)
-
-
-# ------------------------------------------------------------
-# Ping de admin
-# ------------------------------------------------------------
-@router.get("/health", response_model=GenericMessageOut)
-def admin_health(current_user: dict = Depends(get_current_superadmin)) -> GenericMessageOut:
-    return GenericMessageOut(message="Panel superadmin disponible.")

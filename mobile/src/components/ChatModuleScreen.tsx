@@ -1,6 +1,15 @@
 // ============================================================
 // src/components/ChatModuleScreen.tsx
 // Chat reutilizable con avatar configurable desde móvil.
+//
+// Incluye:
+// - carga de conversaciones por módulo
+// - creación de nuevo chat
+// - envío de mensajes
+// - control visual de tokens
+// - avatar dinámico
+// - ejemplos rápidos
+// - recomendación de contactos en Modo Padres / Orientación
 // ============================================================
 
 import {
@@ -29,6 +38,7 @@ import {
   type Message,
   type TokenStatus,
   createConversationRequest,
+  getChatContactRecommendationRequest,
   getConversationMessages,
   getMyTokenStatusRequest,
   listConversations,
@@ -80,6 +90,9 @@ export default function ChatModuleScreen({
   const floatAnim = useRef(new Animated.Value(0)).current;
   const [typingDots, setTypingDots] = useState(".");
 
+  // ----------------------------------------------------------
+  // Animación suave del avatar
+  // ----------------------------------------------------------
   useEffect(() => {
     const animation = Animated.loop(
       Animated.sequence([
@@ -103,6 +116,9 @@ export default function ChatModuleScreen({
     };
   }, [floatAnim]);
 
+  // ----------------------------------------------------------
+  // Animación de puntos mientras responde
+  // ----------------------------------------------------------
   useEffect(() => {
     if (!sending) {
       setTypingDots(".");
@@ -120,6 +136,9 @@ export default function ChatModuleScreen({
     return () => clearInterval(interval);
   }, [sending]);
 
+  // ----------------------------------------------------------
+  // Nombre visible del acompañante
+  // ----------------------------------------------------------
   const visibleCompanionName = useMemo(() => {
     if (module === "amigo_imaginario") {
       return user?.friend_name || companionName;
@@ -128,6 +147,9 @@ export default function ChatModuleScreen({
     return companionName;
   }, [module, user, companionName]);
 
+  // ----------------------------------------------------------
+  // Tema visual según avatar / módulo
+  // ----------------------------------------------------------
   const theme = useMemo(() => {
     return buildCompanionTheme(
       avatarProfile?.primary_color || user?.favorite_color || "",
@@ -135,6 +157,9 @@ export default function ChatModuleScreen({
     );
   }, [user, avatarProfile, avatarVariant]);
 
+  // ----------------------------------------------------------
+  // Subtítulo dinámico
+  // ----------------------------------------------------------
   const visibleSubtitle = useMemo(() => {
     if (module === "amigo_imaginario") {
       return buildCompanionSubtitle(
@@ -147,6 +172,9 @@ export default function ChatModuleScreen({
     return companionSubtitle;
   }, [module, visibleCompanionName, user, companionSubtitle]);
 
+  // ----------------------------------------------------------
+  // Ejemplos rápidos personalizados
+  // ----------------------------------------------------------
   const visibleExamples = useMemo(() => {
     if (module === "amigo_imaginario") {
       return buildPersonalizedExamples(
@@ -160,63 +188,69 @@ export default function ChatModuleScreen({
     return quickExamples;
   }, [module, quickExamples, user, visibleCompanionName]);
 
+  // ----------------------------------------------------------
+  // Carga inicial del chat
+  // ----------------------------------------------------------
   useEffect(() => {
-  if (!token) return;
+    if (!token) return;
 
-  const bootstrap = async () => {
-    try {
-      setLoading(true);
+    const bootstrap = async () => {
+      try {
+        setLoading(true);
 
-      const status = await getMyTokenStatusRequest(token);
-      setTokenStatus(status);
+        const status = await getMyTokenStatusRequest(token);
+        setTokenStatus(status);
 
-      const fetched = await listConversations(module, token);
-      setConversations(fetched);
+        const fetched = await listConversations(module, token);
+        setConversations(fetched);
 
-      // ------------------------------------------------------
-      // Si llega una conversación inicial desde otra pantalla,
-      // se intenta abrir esa primero.
-      // ------------------------------------------------------
-      let targetConversationId: number | null = null;
+        // ----------------------------------------------------
+        // Si llega una conversación inicial desde otra pantalla,
+        // se intenta abrir esa primero.
+        // ----------------------------------------------------
+        let targetConversationId: number | null = null;
 
-      if (initialConversationId) {
-        const existsInList = fetched.some(
-          (conversation) => conversation.id === initialConversationId
+        if (initialConversationId) {
+          const existsInList = fetched.some(
+            (conversation) => conversation.id === initialConversationId
+          );
+
+          if (existsInList) {
+            targetConversationId = initialConversationId;
+          }
+        }
+
+        if (!targetConversationId && fetched.length > 0) {
+          targetConversationId = fetched[0].id;
+        }
+
+        if (!targetConversationId) {
+          const created = await createConversationRequest(module, token);
+          setConversations([created]);
+          targetConversationId = created.id;
+        }
+
+        setSelectedConversationId(targetConversationId);
+
+        const fetchedMessages = await getConversationMessages(
+          targetConversationId,
+          token
         );
 
-        if (existsInList) {
-          targetConversationId = initialConversationId;
-        }
+        setMessages(fetchedMessages);
+      } catch (error: any) {
+        Alert.alert("Error", error?.message || "No se pudo cargar el chat.");
+      } finally {
+        setLoading(false);
       }
+    };
 
-      if (!targetConversationId && fetched.length > 0) {
-        targetConversationId = fetched[0].id;
-      }
+    bootstrap();
+  }, [module, token, initialConversationId]);
 
-      if (!targetConversationId) {
-        const created = await createConversationRequest(module, token);
-        setConversations([created]);
-        targetConversationId = created.id;
-      }
-
-      setSelectedConversationId(targetConversationId);
-
-      const fetchedMessages = await getConversationMessages(
-        targetConversationId,
-        token
-      );
-
-      setMessages(fetchedMessages);
-    } catch (error: any) {
-      Alert.alert("Error", error?.message || "No se pudo cargar el chat.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  bootstrap();
-}, [module, token, initialConversationId]);
-
+  // ----------------------------------------------------------
+  // Cargar mensajes cuando cambia la conversación seleccionada
+  // ----------------------------------------------------------
   useEffect(() => {
     if (!token || !selectedConversationId) return;
 
@@ -226,6 +260,7 @@ export default function ChatModuleScreen({
           selectedConversationId,
           token
         );
+
         setMessages(fetchedMessages);
 
         setTimeout(() => {
@@ -239,17 +274,24 @@ export default function ChatModuleScreen({
     loadMessages();
   }, [selectedConversationId, token]);
 
+  // ----------------------------------------------------------
+  // Mantener scroll abajo cuando llegan mensajes
+  // ----------------------------------------------------------
   useEffect(() => {
     setTimeout(() => {
       scrollRef.current?.scrollToEnd({ animated: true });
     }, 120);
   }, [messages, sending]);
 
+  // ----------------------------------------------------------
+  // Crear nuevo chat
+  // ----------------------------------------------------------
   const handleNewConversation = async () => {
     if (!token) return;
 
     try {
       const created = await createConversationRequest(module, token);
+
       setConversations([created, ...conversations]);
       setSelectedConversationId(created.id);
       setMessages([]);
@@ -259,6 +301,47 @@ export default function ChatModuleScreen({
     }
   };
 
+  // ----------------------------------------------------------
+  // Agregar recomendación de contactos dentro del chat
+  // Solo aplica realmente para Modo Padres. El backend decide
+  // si debe mostrar algo según el rol y el texto del mensaje.
+  // ----------------------------------------------------------
+  const maybeAppendContactRecommendation = async (content: string) => {
+    if (!token) return;
+
+    if (module !== "modo_padres") {
+      return;
+    }
+
+    try {
+      const recommendation = await getChatContactRecommendationRequest(
+        token,
+        content
+      );
+
+      if (!recommendation.should_show || !recommendation.message.trim()) {
+        return;
+      }
+
+      const recommendationMessage: Message = {
+        id: Date.now() + 1,
+        role: "assistant",
+        content: recommendation.message,
+        created_at: new Date().toISOString(),
+      };
+
+      setMessages((prev) => [...prev, recommendationMessage]);
+    } catch {
+      // ------------------------------------------------------
+      // No bloqueamos el chat si la recomendación de contactos
+      // falla. El mensaje principal ya fue enviado.
+      // ------------------------------------------------------
+    }
+  };
+
+  // ----------------------------------------------------------
+  // Enviar mensaje
+  // ----------------------------------------------------------
   const handleSend = async (forcedContent?: string) => {
     if (!token || !selectedConversationId) return;
 
@@ -271,7 +354,8 @@ export default function ChatModuleScreen({
     if (tokenStatus?.is_empty && !tokenStatus.is_unlimited) {
       Alert.alert(
         "Tokens agotados",
-        tokenStatus.message || "Por ahora no tienes tokens disponibles. Revisa cuándo se reinician."
+        tokenStatus.message ||
+          "Por ahora no tienes tokens disponibles. Revisa cuándo se reinician."
       );
       return;
     }
@@ -292,7 +376,11 @@ export default function ChatModuleScreen({
 
       setMessages((prev) => [...prev, tempUserMessage]);
 
-      const result = await sendMessageRequest(selectedConversationId, content, token);
+      const result = await sendMessageRequest(
+        selectedConversationId,
+        content,
+        token
+      );
 
       if (result.token_status) {
         setTokenStatus(result.token_status);
@@ -303,6 +391,12 @@ export default function ChatModuleScreen({
         result.user_message,
         result.assistant_message,
       ]);
+
+      // ------------------------------------------------------
+      // Recomendación de contactos en Modo Padres.
+      // Se agrega como mensaje extra del asistente si aplica.
+      // ------------------------------------------------------
+      await maybeAppendContactRecommendation(content);
 
       const refreshed = await listConversations(module, token);
       setConversations(refreshed);
@@ -369,12 +463,20 @@ export default function ChatModuleScreen({
             <Ionicons
               name={tokenStatus.is_empty ? "pause-circle" : "flash"}
               size={18}
-              color={tokenStatus.is_empty ? "#991b1b" : tokenStatus.is_low ? "#92400e" : "#1e3a8a"}
+              color={
+                tokenStatus.is_empty
+                  ? "#991b1b"
+                  : tokenStatus.is_low
+                  ? "#92400e"
+                  : "#1e3a8a"
+              }
             />
+
             <View style={styles.tokenTextBlock}>
               <Text style={styles.tokenTitle}>
                 Tokens: {tokenStatus.remaining_tokens} de {tokenStatus.daily_limit}
               </Text>
+
               <Text style={styles.tokenText}>
                 {tokenStatus.is_empty
                   ? tokenStatus.message
@@ -404,7 +506,10 @@ export default function ChatModuleScreen({
                   },
                 ]}
                 onPress={() => handleSend(example)}
-                disabled={Boolean(tokenStatus?.is_empty && !tokenStatus.is_unlimited) || sending}
+                disabled={
+                  Boolean(tokenStatus?.is_empty && !tokenStatus.is_unlimited) ||
+                  sending
+                }
               >
                 <Text
                   style={[
@@ -487,7 +592,9 @@ export default function ChatModuleScreen({
                 key={`${message.id}-${message.created_at}`}
                 style={[
                   styles.messageWrapper,
-                  isUser ? styles.userMessageWrapper : styles.assistantMessageWrapper,
+                  isUser
+                    ? styles.userMessageWrapper
+                    : styles.assistantMessageWrapper,
                 ]}
               >
                 {!isUser && (
@@ -498,7 +605,9 @@ export default function ChatModuleScreen({
                       showBadge={false}
                       profile={avatarProfile}
                     />
-                    <Text style={styles.assistantNameText}>{visibleCompanionName}</Text>
+                    <Text style={styles.assistantNameText}>
+                      {visibleCompanionName}
+                    </Text>
                   </View>
                 )}
 
@@ -507,13 +616,18 @@ export default function ChatModuleScreen({
                     styles.messageBubble,
                     isUser
                       ? [styles.userBubble, { backgroundColor: theme.userBubble }]
-                      : [styles.assistantBubble, { backgroundColor: theme.assistantTint }],
+                      : [
+                          styles.assistantBubble,
+                          { backgroundColor: theme.assistantTint },
+                        ],
                   ]}
                 >
                   <Text
                     style={[
                       styles.messageText,
-                      isUser ? styles.userMessageText : styles.assistantMessageText,
+                      isUser
+                        ? styles.userMessageText
+                        : styles.assistantMessageText,
                     ]}
                   >
                     {message.content}
@@ -532,7 +646,9 @@ export default function ChatModuleScreen({
                   showBadge={false}
                   profile={avatarProfile}
                 />
-                <Text style={styles.assistantNameText}>{visibleCompanionName}</Text>
+                <Text style={styles.assistantNameText}>
+                  {visibleCompanionName}
+                </Text>
               </View>
 
               <View
@@ -562,13 +678,18 @@ export default function ChatModuleScreen({
             placeholderTextColor="#8a94a6"
             style={styles.input}
             multiline
-            editable={!sending && !(tokenStatus?.is_empty && !tokenStatus.is_unlimited)}
+            editable={
+              !sending &&
+              !(tokenStatus?.is_empty && !tokenStatus.is_unlimited)
+            }
           />
 
           <View style={styles.inputFooter}>
             <Text style={[styles.inputHint, { color: theme.inputHint }]}>
               {module === "amigo_imaginario"
-                ? `${visibleCompanionName} te escucha con ${user?.encouragement_style || "cariño"}.`
+                ? `${visibleCompanionName} te escucha con ${
+                    user?.encouragement_style || "cariño"
+                  }.`
                 : `Escribe con calma. ${visibleCompanionName} está aquí para ayudarte.`}
             </Text>
 
@@ -576,11 +697,15 @@ export default function ChatModuleScreen({
               style={[
                 styles.sendButton,
                 { backgroundColor: theme.accent },
-                (sending || (tokenStatus?.is_empty && !tokenStatus.is_unlimited)) &&
+                (sending ||
+                  (tokenStatus?.is_empty && !tokenStatus.is_unlimited)) &&
                   styles.sendButtonDisabled,
               ]}
               onPress={() => handleSend()}
-              disabled={sending || Boolean(tokenStatus?.is_empty && !tokenStatus.is_unlimited)}
+              disabled={
+                sending ||
+                Boolean(tokenStatus?.is_empty && !tokenStatus.is_unlimited)
+              }
             >
               <Ionicons name="send" size={16} color="#ffffff" />
               <Text style={styles.sendButtonText}>Enviar</Text>

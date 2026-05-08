@@ -1,7 +1,8 @@
 // ============================================================
 // src/lib/api.ts
 // Cliente de API para la app móvil.
-// Incluye roles, permisos, guests, tokens y aviso legal.
+// Incluye roles, permisos, guests, tokens, aviso legal,
+// biblioteca, conversaciones y soporte para Modo Padres.
 // ============================================================
 
 import { Platform } from "react-native";
@@ -52,11 +53,17 @@ export type UserPermissions = {
   can_access_biblioteca: boolean;
   can_access_modo_padres: boolean;
   can_access_admin: boolean;
+
   can_manage_users: boolean;
   can_manage_guests: boolean;
   can_manage_library: boolean;
+
   can_customize_child_friend: boolean;
   can_view_tokens: boolean;
+
+  // Campos opcionales por compatibilidad con permisos nuevos
+  can_view_library?: boolean;
+  can_chat_with_friend?: boolean;
 };
 
 // ------------------------------------------------------------
@@ -67,11 +74,13 @@ export type AppUser = {
   username: string;
   display_name: string;
   is_admin: boolean;
+
   friend_name: string;
   favorite_color: string;
   favorite_activity: string;
   encouragement_style: string;
   preferred_comfort: string;
+
   role: string;
   role_label: string;
   account_type: string;
@@ -80,6 +89,7 @@ export type AppUser = {
   guest_hours: number;
   guest_expires_at: string;
   is_active: boolean;
+
   permissions: UserPermissions;
   allowed_modules: string[];
   token_status?: TokenStatus | null;
@@ -167,6 +177,109 @@ export type SendArticleToChatResponse = {
 export type LegalNoticeResponse = {
   text: string;
   version: string;
+};
+
+// ============================================================
+// TIPOS: SOPORTE / MODO PADRES
+// ============================================================
+
+export type SupportChild = {
+  id: number;
+  username: string;
+  display_name: string;
+  role: string;
+  linked_at: string;
+};
+
+export type ChildActivitySummary = {
+  child: {
+    id: number;
+    username: string;
+    display_name: string;
+    role?: string;
+  };
+  conversations_by_module: Array<{
+    module: string;
+    total_conversations: number;
+    last_activity: string;
+  }>;
+  messages_by_module: Array<{
+    module: string;
+    total_messages: number;
+    user_messages: number;
+    assistant_messages: number;
+  }>;
+  recent_activity: Array<{
+    id: number;
+    module: string;
+    title: string;
+    updated_at: string;
+    total_messages: number;
+  }>;
+  token_wallet: {
+    daily_limit?: number;
+    remaining_tokens?: number;
+    used_tokens?: number;
+    low_threshold?: number;
+    last_reset_at?: string;
+    next_reset_at?: string;
+  };
+  support_summary: {
+    total_requests?: number;
+    open_requests?: number;
+    in_review_requests?: number;
+    closed_requests?: number;
+  };
+  note: string;
+};
+
+export type SupportRequest = {
+  id: number;
+  parent_user_id: number;
+  child_user_id?: number | null;
+  subject: string;
+  message: string;
+  priority: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  child_name?: string | null;
+  child_username?: string | null;
+  parent_name?: string | null;
+  parent_username?: string | null;
+};
+
+export type SupportReply = {
+  id: number;
+  request_id: number;
+  author_user_id: number;
+  message: string;
+  created_at: string;
+  author_name: string;
+  author_username: string;
+};
+
+export type SupportContact = {
+  id: number;
+  name: string;
+  specialty: string;
+  organization: string;
+  phone: string;
+  email: string;
+  address: string;
+  notes: string;
+  is_active: number;
+  created_at?: string;
+  updated_at?: string;
+  recommendation_note?: string | null;
+  recommended_at?: string | null;
+  recommended_by_name?: string | null;
+};
+
+export type ChatContactRecommendation = {
+  should_show: boolean;
+  message: string;
+  contacts: SupportContact[];
 };
 
 // ------------------------------------------------------------
@@ -540,6 +653,246 @@ export async function sendArticleToChatRequest(
     `/api/library/articles/${articleId}/send-to-chat`,
     {
       method: "POST",
+    },
+    token
+  );
+}
+
+// ============================================================
+// SOPORTE / MODO PADRES
+// ============================================================
+
+export async function getSupportChildrenRequest(
+  token: string
+): Promise<SupportChild[]> {
+  return apiRequest<SupportChild[]>(
+    "/api/support/children",
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function getChildActivitySummaryRequest(
+  token: string,
+  childUserId: number
+): Promise<ChildActivitySummary> {
+  return apiRequest<ChildActivitySummary>(
+    `/api/support/children/${childUserId}/summary`,
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function getSupportContactsRequest(
+  token: string
+): Promise<SupportContact[]> {
+  return apiRequest<SupportContact[]>(
+    "/api/support/contacts",
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function getSupportRequestsRequest(
+  token: string
+): Promise<SupportRequest[]> {
+  return apiRequest<SupportRequest[]>(
+    "/api/support/requests",
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function createSupportRequestRequest(
+  token: string,
+  payload: {
+    child_user_id?: number | null;
+    subject: string;
+    message: string;
+    priority: string;
+  }
+): Promise<SupportRequest> {
+  return apiRequest<SupportRequest>(
+    "/api/support/requests",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        child_user_id: payload.child_user_id ?? null,
+        subject: payload.subject.trim(),
+        message: payload.message.trim(),
+        priority: payload.priority,
+      }),
+    },
+    token
+  );
+}
+
+export async function getSupportRequestRepliesRequest(
+  token: string,
+  requestId: number
+): Promise<SupportReply[]> {
+  return apiRequest<SupportReply[]>(
+    `/api/support/requests/${requestId}/replies`,
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function getSupportRequestContactsRequest(
+  token: string,
+  requestId: number
+): Promise<SupportContact[]> {
+  return apiRequest<SupportContact[]>(
+    `/api/support/requests/${requestId}/contacts`,
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function getChatContactRecommendationRequest(
+  token: string,
+  message: string
+): Promise<ChatContactRecommendation> {
+  const query = new URLSearchParams({
+    message,
+  });
+
+  return apiRequest<ChatContactRecommendation>(
+    `/api/support/chat-contact-recommendation?${query.toString()}`,
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+// ============================================================
+// ADMIN / SUPERADMIN
+// ============================================================
+
+export type AdminUser = AppUser & {
+  token_status?: TokenStatus | null;
+};
+
+export type AdminGuestPayload = {
+  username: string;
+  password: string;
+  display_name: string;
+  guest_type: "guest_child" | "guest_parent";
+  hours: number;
+  token_limit: number;
+};
+
+export async function adminListUsersRequest(
+  token: string
+): Promise<AdminUser[]> {
+  return apiRequest<AdminUser[]>(
+    "/api/admin/users",
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function adminUpdateUserRoleRequest(
+  token: string,
+  userId: number,
+  role: string
+): Promise<AdminUser> {
+  return apiRequest<AdminUser>(
+    `/api/admin/users/${userId}/role`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
+    },
+    token
+  );
+}
+
+export async function adminUpdateUserTokensRequest(
+  token: string,
+  userId: number,
+  payload: {
+    daily_limit: number;
+    reset_interval_hours: number;
+    low_threshold: number;
+  }
+): Promise<TokenStatus> {
+  return apiRequest<TokenStatus>(
+    `/api/admin/users/${userId}/tokens`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+    token
+  );
+}
+
+export async function adminListGuestsRequest(
+  token: string
+): Promise<AdminUser[]> {
+  return apiRequest<AdminUser[]>(
+    "/api/admin/guests",
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function adminCreateGuestRequest(
+  token: string,
+  payload: AdminGuestPayload
+): Promise<AdminUser> {
+  return apiRequest<AdminUser>(
+    "/api/admin/guests",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+    token
+  );
+}
+
+export async function adminExtendGuestRequest(
+  token: string,
+  userId: number,
+  extraHours: number
+): Promise<AdminUser> {
+  return apiRequest<AdminUser>(
+    `/api/admin/guests/${userId}/extend`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        extra_hours: extraHours,
+      }),
+    },
+    token
+  );
+}
+
+export async function adminDeactivateGuestRequest(
+  token: string,
+  userId: number
+): Promise<AdminUser> {
+  return apiRequest<AdminUser>(
+    `/api/admin/guests/${userId}/deactivate`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({}),
     },
     token
   );
