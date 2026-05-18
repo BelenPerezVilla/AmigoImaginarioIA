@@ -132,6 +132,10 @@ export type SendMessageResponse = {
   user_message: Message;
   assistant_message: Message;
   token_status?: TokenStatus | null;
+
+  blocked_by_safety?: boolean;
+  safety_category?: string;
+  safety_message?: string;
 };
 
 export type Article = {
@@ -280,6 +284,41 @@ export type ChatContactRecommendation = {
   should_show: boolean;
   message: string;
   contacts: SupportContact[];
+};
+
+
+// ------------------------------------------------------------
+// Términos y condiciones
+// ------------------------------------------------------------
+export type TermsResponse = {
+  text: string;
+  version: string;
+  role: string;
+};
+
+export type TermsStatusResponse = {
+  accepted: boolean;
+  version: string;
+  role: string;
+};
+
+
+// ------------------------------------------------------------
+// Alerta parental
+// ------------------------------------------------------------
+export type ParentalNotification = {
+  id: number;
+  parent_user_id: number;
+  child_user_id: number;
+  safety_event_id?: number | null;
+  title: string;
+  message: string;
+  category: string;
+  is_read: number;
+  created_at: string;
+  read_at?: string | null;
+  child_name: string;
+  child_username: string;
 };
 
 // ------------------------------------------------------------
@@ -778,6 +817,95 @@ export async function getChatContactRecommendationRequest(
   );
 }
 
+// ------------------------------------------------------------
+// Obtener alertas parentales del padre/tutor
+// ------------------------------------------------------------
+export async function getParentalNotificationsRequest(
+  token: string,
+  unreadOnly: boolean = false
+): Promise<ParentalNotification[]> {
+  const query = new URLSearchParams({
+    unread_only: String(unreadOnly),
+  });
+
+  return apiRequest<ParentalNotification[]>(
+    `/api/support/parental-notifications?${query.toString()}`,
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+
+// ------------------------------------------------------------
+// Marcar una alerta parental como leída
+// ------------------------------------------------------------
+export async function markParentalNotificationReadRequest(
+  token: string,
+  notificationId: number
+): Promise<ParentalNotification> {
+  return apiRequest<ParentalNotification>(
+    `/api/support/parental-notifications/${notificationId}/read`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({}),
+    },
+    token
+  );
+}
+
+
+// ------------------------------------------------------------
+// Obtener términos públicos por rol
+// ------------------------------------------------------------
+export async function getTermsRequest(
+  role: string = "child"
+): Promise<TermsResponse> {
+  const query = new URLSearchParams({ role });
+
+  return apiRequest<TermsResponse>(`/api/auth/terms?${query.toString()}`, {
+    method: "GET",
+  });
+}
+
+
+// ------------------------------------------------------------
+// Consultar si el usuario ya aceptó términos
+// ------------------------------------------------------------
+export async function getMyTermsStatusRequest(
+  token: string
+): Promise<TermsStatusResponse> {
+  return apiRequest<TermsStatusResponse>(
+    "/api/auth/me/terms/status",
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+
+// ------------------------------------------------------------
+// Guardar aceptación de términos
+// ------------------------------------------------------------
+export async function acceptMyTermsRequest(
+  token: string,
+  version: string
+): Promise<TermsStatusResponse> {
+  return apiRequest<TermsStatusResponse>(
+    "/api/auth/me/terms/accept",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        accepted: true,
+        version,
+      }),
+    },
+    token
+  );
+}
+
 // ============================================================
 // ADMIN / SUPERADMIN
 // ============================================================
@@ -1129,6 +1257,76 @@ export async function adminDeactivateSupportContactRequest(
     {
       method: "PATCH",
       body: JSON.stringify({}),
+    },
+    token
+  );
+}
+
+// ============================================================
+// ADMIN / VÍNCULOS PADRE-HIJO
+// ============================================================
+
+export type ParentChildLink = {
+  id: number;
+  parent_user_id: number;
+  child_user_id: number;
+  created_by_user_id?: number | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+
+  parent_username: string;
+  parent_name: string;
+  parent_role: string;
+
+  child_username: string;
+  child_name: string;
+  child_role: string;
+};
+
+export async function adminListParentChildLinksRequest(
+  token: string
+): Promise<ParentChildLink[]> {
+  return apiRequest<ParentChildLink[]>(
+    "/api/admin/parent-child-links",
+    {
+      method: "GET",
+    },
+    token
+  );
+}
+
+export async function adminCreateParentChildLinkRequest(
+  token: string,
+  payload: {
+    parent_user_id: number;
+    child_user_id: number;
+  }
+): Promise<ParentChildLink> {
+  return apiRequest<ParentChildLink>(
+    "/api/admin/parent-child-links",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+    token
+  );
+}
+
+export async function adminDeleteParentChildLinkRequest(
+  token: string,
+  parentUserId: number,
+  childUserId: number
+): Promise<{
+  ok: boolean;
+  message: string;
+  parent_user_id: number;
+  child_user_id: number;
+}> {
+  return apiRequest(
+    `/api/admin/parent-child-links/${parentUserId}/${childUserId}`,
+    {
+      method: "DELETE",
     },
     token
   );

@@ -15,6 +15,7 @@ import sqlite3
 from typing import Any
 
 from database.chat_db import get_connection
+from database.access_control import assert_superadmin
 
 
 # ------------------------------------------------------------
@@ -48,6 +49,33 @@ def rows_to_list(rows: list[sqlite3.Row]) -> list[dict]:
     Convierte varias filas SQLite a lista de diccionarios.
     """
     return [dict(row) for row in rows]
+
+
+# ------------------------------------------------------------
+# Validar que una acción del directorio sea del superadmin
+# ------------------------------------------------------------
+def assert_support_directory_superadmin(user_id: int | None) -> dict:
+    """
+    Verifica que el usuario que intenta administrar el directorio sea superadmin.
+
+    Esta validación está en la capa de base de datos para evitar que
+    una ruta, formulario o llamada interna pueda crear, desactivar o
+    recomendar contactos profesionales sin autorización.
+    """
+    if user_id is None:
+        raise ValueError("Solo el superadmin puede administrar el directorio profesional.")
+
+    user = get_user_basic(int(user_id))
+
+    if not user:
+        raise ValueError("Usuario administrador no encontrado.")
+
+    try:
+        assert_superadmin(user)
+    except ValueError as error:
+        raise ValueError("Solo el superadmin puede administrar el directorio profesional.") from error
+
+    return user
 
 
 # ------------------------------------------------------------
@@ -789,8 +817,15 @@ def create_support_contact(
     created_by_user_id: int | None = None,
 ) -> dict:
     """
-    Crea un contacto o lugar recomendado.
+    Crea un contacto o lugar recomendado para el directorio profesional.
+
+    Seguridad:
+        Solo un usuario superadmin puede crear registros.
+        Esto protege aunque alguien intente llamar la función desde una
+        ruta, script o formulario no autorizado.
     """
+    assert_support_directory_superadmin(created_by_user_id)
+
     name_clean = name.strip()
     specialty_clean = specialty.strip()
 
@@ -893,10 +928,18 @@ def list_support_contacts(active_only: bool = True) -> list[dict]:
 # ------------------------------------------------------------
 # Desactivar contacto
 # ------------------------------------------------------------
-def deactivate_support_contact(contact_id: int) -> None:
+def deactivate_support_contact(
+    contact_id: int,
+    updated_by_user_id: int | None = None,
+) -> dict:
     """
-    Desactiva un contacto recomendado.
+    Desactiva un contacto recomendado del directorio profesional.
+
+    Seguridad:
+        Solo el superadmin puede desactivar registros.
     """
+    assert_support_directory_superadmin(updated_by_user_id)
+
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -910,8 +953,14 @@ def deactivate_support_contact(contact_id: int) -> None:
         contact_id,
     ))
 
+    if cursor.rowcount == 0:
+        connection.close()
+        raise ValueError("Contacto no encontrado.")
+
     connection.commit()
     connection.close()
+
+    return get_support_contact_by_id(int(contact_id)) or {}
 
 
 # ------------------------------------------------------------
@@ -1073,6 +1122,48 @@ def search_support_contacts_by_text(
     params.append(limit)
 
     cursor.execute(query, params)
+
+    rows = cursor.fetchall()
+    connection.close()
+
+    return rows_to_list(rows)
+
+# ------------------------------------------------------------
+# Listar vínculos padre-hijo para administración
+# ------------------------------------------------------------
+def list_parent_child_links() -> list[dict]:
+    """
+    Lista vínculos activos entre padres e hijos para panel admin.
+    """
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            pcl.id,
+            pcl.parent_user_id,
+            pcl.child_user_id,
+            pcl.created_by_user_id,
+            pcl.status,
+            pcl.created_at,
+            pcl.updated_at,
+
+            parent.username AS parent_username,
+            parent.display_name AS parent_name,
+            parent.role AS parent_role,
+
+            child.username AS child_username,
+            child.display_name AS child_name,
+            child.role AS child_role
+
+        FROM parent_child_links pcl
+        INNER JOIN users parent
+            ON parent.id = pcl.parent_user_id
+        INNER JOIN users child
+            ON child.id = pcl.child_user_id
+        WHERE pcl.status = 'active'
+        ORDER BY parent.display_name ASC, child.display_name ASC;
+    """)
 
     rows = cursor.fetchall()
     connection.close()

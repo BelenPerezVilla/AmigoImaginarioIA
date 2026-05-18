@@ -6,14 +6,14 @@
 # - tokens
 # - cuentas guest
 # - solicitudes de apoyo de padres
-# - contactos recomendados
+# - directorio profesional
+# - vínculos padre-hijo
 # ============================================================
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from database.access_control import (
-    assert_superadmin,
     create_guest_user,
     deactivate_guest_user,
     extend_guest_user,
@@ -22,6 +22,7 @@ from database.access_control import (
     set_user_token_policy,
     update_user_role,
 )
+
 from database.support_db import (
     add_support_reply,
     create_support_contact,
@@ -32,9 +33,16 @@ from database.support_db import (
     list_support_requests_for_superadmin,
     recommend_contact_for_request,
     update_support_request_status,
+    link_parent_child,
+    list_parent_child_links,
+    unlink_parent_child,
 )
-from mobile_backend.app.core.deps import get_current_user
 
+from mobile_backend.app.core.deps import get_current_superadmin
+
+
+# Router principal de administración.
+# Todas las rutas de este archivo quedan protegidas por get_current_superadmin.
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
@@ -43,16 +51,23 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 # ============================================================
 
 class UpdateRoleRequest(BaseModel):
+    # Rol nuevo que se asignará al usuario.
     role: str = Field(min_length=1)
 
 
 class UpdateTokensRequest(BaseModel):
+    # Límite diario de tokens del usuario.
     daily_limit: int = Field(ge=0)
+
+    # Intervalo de reinicio del contador de tokens.
     reset_interval_hours: int = Field(default=24, ge=1)
+
+    # Umbral bajo para alertas o control interno.
     low_threshold: int = Field(default=5, ge=0)
 
 
 class CreateGuestRequest(BaseModel):
+    # Datos para crear una cuenta invitada.
     username: str = Field(min_length=3)
     password: str = Field(min_length=8)
     display_name: str = Field(min_length=1)
@@ -62,23 +77,29 @@ class CreateGuestRequest(BaseModel):
 
 
 class ExtendGuestRequest(BaseModel):
+    # Horas extra que se agregarán a una cuenta invitada.
     extra_hours: int = Field(default=1, ge=1)
 
 
 # ============================================================
-# Schemas: apoyo a padres
+# Schemas: apoyo a padres / directorio profesional
 # ============================================================
 
 class AddSupportReplyRequest(BaseModel):
+    # Mensaje de respuesta del superadmin hacia la solicitud de apoyo.
     message: str = Field(min_length=1, max_length=4000)
+
+    # Nuevo estado de la solicitud después de responder.
     new_status: str = Field(default="in_review")
 
 
 class UpdateSupportStatusRequest(BaseModel):
+    # Estado nuevo para la solicitud de apoyo.
     status: str = Field(min_length=1)
 
 
 class CreateSupportContactRequest(BaseModel):
+    # Información del profesional que se agregará al directorio.
     name: str = Field(min_length=1, max_length=180)
     specialty: str = Field(default="", max_length=180)
     organization: str = Field(default="", max_length=180)
@@ -89,21 +110,14 @@ class CreateSupportContactRequest(BaseModel):
 
 
 class RecommendContactRequest(BaseModel):
+    # Nota opcional del superadmin al recomendar un profesional.
     note: str = Field(default="", max_length=1000)
 
 
-# ============================================================
-# Helper
-# ============================================================
-
-def require_superadmin(current_user: dict) -> None:
-    try:
-        assert_superadmin(current_user)
-    except ValueError as error:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(error),
-        ) from error
+class CreateParentChildLinkRequest(BaseModel):
+    # ID del padre/tutor y del niño que se van a vincular.
+    parent_user_id: int = Field(ge=1)
+    child_user_id: int = Field(ge=1)
 
 
 # ============================================================
@@ -112,9 +126,14 @@ def require_superadmin(current_user: dict) -> None:
 
 @router.get("/users")
 def admin_list_users(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> list[dict]:
-    require_superadmin(current_user)
+    """
+    Lista usuarios del sistema.
+    Solo puede acceder el superadmin porque la dependencia get_current_superadmin
+    ya valida el rol antes de entrar a esta función.
+    """
+
     return list_users_with_access(limit=500)
 
 
@@ -122,9 +141,12 @@ def admin_list_users(
 def admin_update_user_role(
     user_id: int,
     payload: UpdateRoleRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> dict:
-    require_superadmin(current_user)
+    """
+    Actualiza el rol de un usuario.
+    Solo el superadmin puede modificar roles.
+    """
 
     try:
         return update_user_role(
@@ -142,9 +164,12 @@ def admin_update_user_role(
 def admin_update_user_tokens(
     user_id: int,
     payload: UpdateTokensRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> dict:
-    require_superadmin(current_user)
+    """
+    Actualiza la política de tokens de un usuario.
+    Solo el superadmin puede modificar límites de uso.
+    """
 
     try:
         return set_user_token_policy(
@@ -166,18 +191,25 @@ def admin_update_user_tokens(
 
 @router.get("/guests")
 def admin_list_guests(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> list[dict]:
-    require_superadmin(current_user)
+    """
+    Lista cuentas invitadas.
+    Solo el superadmin puede consultar esta información.
+    """
+
     return list_guest_users(limit=500)
 
 
 @router.post("/guests")
 def admin_create_guest(
     payload: CreateGuestRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> dict:
-    require_superadmin(current_user)
+    """
+    Crea una cuenta invitada.
+    Se guarda el ID del superadmin que la creó.
+    """
 
     try:
         return create_guest_user(
@@ -200,9 +232,11 @@ def admin_create_guest(
 def admin_extend_guest(
     user_id: int,
     payload: ExtendGuestRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> dict:
-    require_superadmin(current_user)
+    """
+    Extiende la vigencia de una cuenta invitada.
+    """
 
     try:
         return extend_guest_user(
@@ -219,9 +253,11 @@ def admin_extend_guest(
 @router.patch("/guests/{user_id}/deactivate")
 def admin_deactivate_guest(
     user_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> dict:
-    require_superadmin(current_user)
+    """
+    Desactiva una cuenta invitada.
+    """
 
     try:
         return deactivate_guest_user(user_id)
@@ -239,9 +275,11 @@ def admin_deactivate_guest(
 @router.get("/support-requests")
 def admin_list_support_requests(
     status_filter: str = Query(default="Todas"),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> list[dict]:
-    require_superadmin(current_user)
+    """
+    Lista solicitudes de apoyo recibidas desde padres/tutores.
+    """
 
     return list_support_requests_for_superadmin(
         status_filter=status_filter,
@@ -251,9 +289,11 @@ def admin_list_support_requests(
 @router.get("/support-requests/{request_id}/replies")
 def admin_list_support_replies(
     request_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> list[dict]:
-    require_superadmin(current_user)
+    """
+    Lista respuestas de una solicitud de apoyo específica.
+    """
 
     return list_support_replies(request_id)
 
@@ -262,9 +302,11 @@ def admin_list_support_replies(
 def admin_add_support_reply(
     request_id: int,
     payload: AddSupportReplyRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> dict:
-    require_superadmin(current_user)
+    """
+    Agrega una respuesta del superadmin a una solicitud de apoyo.
+    """
 
     try:
         return add_support_reply(
@@ -284,9 +326,11 @@ def admin_add_support_reply(
 def admin_update_support_status(
     request_id: int,
     payload: UpdateSupportStatusRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> dict:
-    require_superadmin(current_user)
+    """
+    Actualiza el estado de una solicitud de apoyo.
+    """
 
     try:
         return update_support_request_status(
@@ -303,9 +347,11 @@ def admin_update_support_status(
 @router.get("/support-requests/{request_id}/contacts")
 def admin_list_request_recommended_contacts(
     request_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> list[dict]:
-    require_superadmin(current_user)
+    """
+    Lista contactos profesionales recomendados para una solicitud.
+    """
 
     return list_recommended_contacts_for_request(request_id)
 
@@ -315,9 +361,11 @@ def admin_recommend_contact_for_request(
     request_id: int,
     contact_id: int,
     payload: RecommendContactRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> dict:
-    require_superadmin(current_user)
+    """
+    Recomienda un contacto profesional a una solicitud de apoyo.
+    """
 
     try:
         return recommend_contact_for_request(
@@ -334,14 +382,17 @@ def admin_recommend_contact_for_request(
 
 
 # ============================================================
-# Contactos recomendados
+# Directorio profesional
 # ============================================================
 
 @router.get("/support-contacts")
 def admin_list_support_contacts(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> list[dict]:
-    require_superadmin(current_user)
+    """
+    Lista contactos del directorio profesional, incluyendo activos e inactivos.
+    Solo el superadmin puede ver esta vista administrativa.
+    """
 
     return list_support_contacts(active_only=False)
 
@@ -349,9 +400,12 @@ def admin_list_support_contacts(
 @router.post("/support-contacts")
 def admin_create_support_contact(
     payload: CreateSupportContactRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> dict:
-    require_superadmin(current_user)
+    """
+    Crea un contacto profesional en el directorio.
+    Esta acción queda restringida al superadmin.
+    """
 
     try:
         return create_support_contact(
@@ -374,12 +428,85 @@ def admin_create_support_contact(
 @router.patch("/support-contacts/{contact_id}/deactivate")
 def admin_deactivate_support_contact(
     contact_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_superadmin),
 ) -> dict:
-    require_superadmin(current_user)
+    """
+    Desactiva un contacto profesional del directorio.
+    Esta acción queda restringida al superadmin.
+    """
 
     try:
-        return deactivate_support_contact(contact_id)
+        return deactivate_support_contact(
+            contact_id,
+            updated_by_user_id=current_user["id"],
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
+
+
+# ============================================================
+# Vínculos padre-hijo
+# ============================================================
+
+@router.get("/parent-child-links")
+def admin_list_parent_child_links(
+    current_user: dict = Depends(get_current_superadmin),
+) -> list[dict]:
+    """
+    Lista vínculos existentes entre padres/tutores e hijos.
+    """
+
+    return list_parent_child_links()
+
+
+@router.post("/parent-child-links")
+def admin_create_parent_child_link(
+    payload: CreateParentChildLinkRequest,
+    current_user: dict = Depends(get_current_superadmin),
+) -> dict:
+    """
+    Crea un vínculo entre padre/tutor e hijo.
+    Solo el superadmin puede administrar estos vínculos.
+    """
+
+    try:
+        return link_parent_child(
+            parent_user_id=payload.parent_user_id,
+            child_user_id=payload.child_user_id,
+            created_by_user_id=current_user["id"],
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
+
+
+@router.delete("/parent-child-links/{parent_user_id}/{child_user_id}")
+def admin_delete_parent_child_link(
+    parent_user_id: int,
+    child_user_id: int,
+    current_user: dict = Depends(get_current_superadmin),
+) -> dict:
+    """
+    Elimina un vínculo entre padre/tutor e hijo.
+    """
+
+    try:
+        unlink_parent_child(
+            parent_user_id=parent_user_id,
+            child_user_id=child_user_id,
+        )
+
+        return {
+            "ok": True,
+            "message": "Vínculo eliminado correctamente.",
+            "parent_user_id": parent_user_id,
+            "child_user_id": child_user_id,
+        }
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

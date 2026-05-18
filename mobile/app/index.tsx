@@ -1,31 +1,37 @@
-// Redirección inicial según sesión
-import React from "react";
-import { ActivityIndicator, View } from "react-native";
+// ============================================================
+// mobile/app/index.tsx
+// Redirección inicial según sesión.
+// ============================================================
+
+import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { Redirect } from "expo-router";
 
 import { useAuth } from "../src/lib/auth";
+import { BRAND } from "../src/lib/brand";
 
 export default function IndexScreen() {
   const { token, isLoading } = useAuth();
 
   if (isLoading) {
     return (
-      <View
-        style={{
-          flex: 1,
-          backgroundColor: "#f5f7fb",
-          justifyContent: "center",
-          alignItems: "center",
-        }}
-      >
-        <ActivityIndicator size="large" color="#2f64b9" />
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" color={BRAND.colors.blueDark} />
       </View>
     );
   }
 
-  if (token) {
-    return <Redirect href="/(tabs)/home" />;
+  if (!token) {
+    return <Redirect href="/(auth)/login" />;
   }
 
-  return <Redirect href="/(auth)/login" />;
+  return <Redirect href="/(tabs)/home" />;
 }
+
+const styles = StyleSheet.create({
+  centered: {
+    flex: 1,
+    backgroundColor: BRAND.colors.background,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+});

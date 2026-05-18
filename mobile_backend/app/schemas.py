@@ -173,6 +173,9 @@ class SendMessageResponse(BaseModel):
     user_message: MessageOut
     assistant_message: MessageOut
     token_status: TokenStatusOut | None = None
+    blocked_by_safety: bool = False
+    safety_category: str = ""
+    safety_message: str = ""
 
 
 # ------------------------------------------------------------
@@ -246,3 +249,22 @@ class GenericMessageOut(BaseModel):
     ok: bool = True
     message: str
     data: dict[str, Any] | None = None
+
+# ------------------------------------------------------------
+# Términos y condiciones
+# ------------------------------------------------------------
+class TermsOut(BaseModel):
+    text: str
+    version: str
+    role: str = ""
+
+
+class TermsStatusOut(BaseModel):
+    accepted: bool
+    version: str
+    role: str = ""
+
+
+class AcceptTermsRequest(BaseModel):
+    accepted: bool = True
+    version: str = ""

@@ -16,22 +16,25 @@ import { Ionicons } from "@expo/vector-icons";
 import ChatModuleScreen from "../../src/components/ChatModuleScreen";
 import {
   type ChildActivitySummary,
+  type ParentalNotification,
   type SupportChild,
   type SupportContact,
   type SupportReply,
   type SupportRequest,
   createSupportRequestRequest,
   getChildActivitySummaryRequest,
+  getParentalNotificationsRequest,
   getSupportChildrenRequest,
   getSupportContactsRequest,
   getSupportRequestContactsRequest,
   getSupportRequestRepliesRequest,
   getSupportRequestsRequest,
+  markParentalNotificationReadRequest,
 } from "../../src/lib/api";
 import { useAuth } from "../../src/lib/auth";
 
 type MainTab = "seguimiento" | "orientacion";
-type SupportTab = "resumen" | "mensajes" | "contactos";
+type SupportTab = "resumen" | "alertas" | "mensajes" | "contactos";
 
 function formatModuleName(module: string): string {
   const map: Record<string, string> = {
@@ -89,6 +92,7 @@ export default function PadresScreen() {
 
   const [contacts, setContacts] = useState<SupportContact[]>([]);
   const [requests, setRequests] = useState<SupportRequest[]>([]);
+  const [notifications, setNotifications] = useState<ParentalNotification[]>([]);
 
   const [subject, setSubject] = useState("");
   const [message, setMessage] = useState("");
@@ -116,15 +120,17 @@ export default function PadresScreen() {
     try {
       setLoading(true);
 
-      const [childrenData, contactsData, requestsData] = await Promise.all([
+      const [childrenData, contactsData, requestsData, notificationsData] = await Promise.all([
         getSupportChildrenRequest(token),
         getSupportContactsRequest(token),
         getSupportRequestsRequest(token),
+        getParentalNotificationsRequest(token),
       ]);
 
       setChildren(childrenData);
       setContacts(contactsData);
       setRequests(requestsData);
+      setNotifications(notificationsData);
 
       const childToUse = selectedChildId || childrenData[0]?.id || null;
 
@@ -209,6 +215,22 @@ export default function PadresScreen() {
     }
   };
 
+  const handleMarkNotificationRead = async (notificationId: number) => {
+    if (!token) return;
+
+    try {
+      const updated = await markParentalNotificationReadRequest(token, notificationId);
+
+      setNotifications((prev) =>
+        prev.map((notification) =>
+          notification.id === notificationId ? updated : notification
+        )
+      );
+    } catch (error: any) {
+      Alert.alert("Error", error?.message || "No se pudo marcar la alerta como leída.");
+    }
+  };
+
   const openRequestDetails = async (request: SupportRequest) => {
     if (!token) return;
 
@@ -247,13 +269,12 @@ export default function PadresScreen() {
       <View style={styles.flex}>
         <View style={styles.topTabs}>
           <Pressable
-            style={[styles.topTab, mainTab === "seguimiento" && styles.topTabActive]}
+            style={styles.topTab}
             onPress={() => setMainTab("seguimiento")}
           >
             <Text
               style={[
                 styles.topTabText,
-                mainTab === "seguimiento" && styles.topTabTextActive,
               ]}
             >
               Seguimiento
@@ -261,13 +282,13 @@ export default function PadresScreen() {
           </Pressable>
 
           <Pressable
-            style={[styles.topTab, mainTab === "orientacion" && styles.topTabActive]}
+            style={[styles.topTab, styles.topTabActive]}
             onPress={() => setMainTab("orientacion")}
           >
             <Text
               style={[
                 styles.topTabText,
-                mainTab === "orientacion" && styles.topTabTextActive,
+                styles.topTabTextActive,
               ]}
             >
               Orientación general
@@ -306,13 +327,13 @@ export default function PadresScreen() {
     <View style={styles.flex}>
       <View style={styles.topTabs}>
         <Pressable
-          style={[styles.topTab, mainTab === "seguimiento" && styles.topTabActive]}
+          style={[styles.topTab, styles.topTabActive]}
           onPress={() => setMainTab("seguimiento")}
         >
           <Text
             style={[
               styles.topTabText,
-              mainTab === "seguimiento" && styles.topTabTextActive,
+              styles.topTabTextActive,
             ]}
           >
             Seguimiento
@@ -320,13 +341,12 @@ export default function PadresScreen() {
         </Pressable>
 
         <Pressable
-          style={[styles.topTab, mainTab === "orientacion" && styles.topTabActive]}
+          style={styles.topTab}
           onPress={() => setMainTab("orientacion")}
         >
           <Text
             style={[
               styles.topTabText,
-              mainTab === "orientacion" && styles.topTabTextActive,
             ]}
           >
             Orientación general
@@ -361,6 +381,20 @@ export default function PadresScreen() {
               ]}
             >
               Resumen
+            </Text>
+          </Pressable>
+
+          <Pressable
+            style={[styles.segmentChip, supportTab === "alertas" && styles.segmentChipActive]}
+            onPress={() => setSupportTab("alertas")}
+          >
+            <Text
+              style={[
+                styles.segmentChipText,
+                supportTab === "alertas" && styles.segmentChipTextActive,
+              ]}
+            >
+              Alertas
             </Text>
           </Pressable>
 
@@ -511,6 +545,62 @@ export default function PadresScreen() {
                   <Text style={styles.legalNote}>{summary.note}</Text>
                 )}
               </>
+            )}
+          </>
+        )}
+
+        {supportTab === "alertas" && (
+          <>
+            <Text style={styles.sectionTitle}>Alertas parentales</Text>
+
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Control de contenido sensible</Text>
+              <Text style={styles.cardText}>
+                Aquí aparecerán avisos cuando AbrazoIA bloquee un intento de
+                contenido no permitido en una cuenta de hijo vinculada.
+              </Text>
+            </View>
+
+            {notifications.length === 0 ? (
+              <Text style={styles.emptyText}>
+                No hay alertas parentales registradas.
+              </Text>
+            ) : (
+              notifications.map((notification) => {
+                const isUnread = Number(notification.is_read) === 0;
+
+                return (
+                  <View
+                    key={notification.id}
+                    style={[styles.card, isUnread && styles.alertUnreadCard]}
+                  >
+                    <View style={styles.requestHeader}>
+                      <Text style={styles.cardTitle}>{notification.title}</Text>
+                      {isUnread && <Text style={styles.alertBadge}>Nueva</Text>}
+                    </View>
+
+                    <Text style={styles.cardText}>
+                      Hijo: {notification.child_name || notification.child_username}
+                    </Text>
+                    <Text style={styles.cardText}>
+                      Categoría: {notification.category || "contenido sensible"}
+                    </Text>
+                    <Text style={styles.cardText}>{notification.message}</Text>
+                    <Text style={styles.dateText}>{notification.created_at}</Text>
+
+                    {isUnread && (
+                      <Pressable
+                        style={styles.secondaryButton}
+                        onPress={() => handleMarkNotificationRead(notification.id)}
+                      >
+                        <Text style={styles.secondaryButtonText}>
+                          Marcar como leída
+                        </Text>
+                      </Pressable>
+                    )}
+                  </View>
+                );
+              })
             )}
           </>
         )}
@@ -898,6 +988,32 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     color: "#ffffff",
     fontWeight: "900",
+  },
+  secondaryButton: {
+    backgroundColor: "#e9eef8",
+    borderRadius: 14,
+    paddingVertical: 12,
+    alignItems: "center",
+    marginTop: 12,
+  },
+  secondaryButtonText: {
+    color: "#2f64b9",
+    fontWeight: "900",
+  },
+  alertUnreadCard: {
+    borderWidth: 1,
+    borderColor: "#f59e0b",
+    backgroundColor: "#fffbeb",
+  },
+  alertBadge: {
+    backgroundColor: "#f59e0b",
+    color: "#ffffff",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    overflow: "hidden",
+    fontWeight: "900",
+    fontSize: 12,
   },
   requestHeader: {
     flexDirection: "row",

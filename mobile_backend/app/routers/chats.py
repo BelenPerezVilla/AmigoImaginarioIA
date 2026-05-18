@@ -1,7 +1,11 @@
 # ============================================================
 # mobile_backend/app/routers/chats.py
-# Endpoints de conversaciones y mensajes para la app móvil.
-# Incluye control de roles y consumo de tokens.
+# Endpoints de conversaciones y mensajes.
+# Incluye:
+# - Control de roles.
+# - Control de tokens.
+# - Bloqueo de contenido sensible para niños.
+# - Notificación parental.
 # ============================================================
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -12,6 +16,11 @@ from database.access_control import (
     can_send_message_with_tokens,
     consume_user_token,
     get_token_status,
+)
+from database.safety_db import (
+    analyze_content_safety,
+    record_blocked_content_event,
+    should_apply_child_safety_filter,
 )
 from database.chat_db import (
     add_message,
@@ -34,9 +43,7 @@ from services.gemini_service import (
     generar_respuesta_biblioteca_rag,
 )
 
-# ------------------------------------------------------------
-# Router de chats
-# ------------------------------------------------------------
+
 router = APIRouter(prefix="/api/chats", tags=["chats"])
 
 
@@ -57,7 +64,7 @@ def build_friend_profile(current_user: dict) -> dict:
 
 
 # ------------------------------------------------------------
-# Validar acceso a módulo y convertir errores en HTTP
+# Validar acceso a módulo
 # ------------------------------------------------------------
 def require_module_access(current_user: dict, module: str) -> None:
     """
@@ -88,7 +95,7 @@ def list_module_conversations(
     conversations = list_conversations_by_module(
         user_id=current_user["id"],
         module=module,
-        limit=100
+        limit=100,
     )
 
     return [ConversationOut(**conversation) for conversation in conversations]
@@ -109,18 +116,18 @@ def create_module_conversation(
 
     conversation_id = create_conversation(
         user_id=current_user["id"],
-        module=module
+        module=module,
     )
 
     conversation = get_conversation_by_id(
         conversation_id=conversation_id,
-        user_id=current_user["id"]
+        user_id=current_user["id"],
     )
 
     if not conversation:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="No se pudo crear la conversación."
+            detail="No se pudo crear la conversación.",
         )
 
     return ConversationOut(**conversation)
@@ -139,20 +146,20 @@ def get_conversation_messages(
     """
     conversation = get_conversation_by_id(
         conversation_id=conversation_id,
-        user_id=current_user["id"]
+        user_id=current_user["id"],
     )
 
     if not conversation:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Conversación no encontrada."
+            detail="Conversación no encontrada.",
         )
 
     require_module_access(current_user, conversation["module"])
 
     messages = get_messages_by_conversation(
         conversation_id=conversation_id,
-        user_id=current_user["id"]
+        user_id=current_user["id"],
     )
 
     return [MessageOut(**message) for message in messages]
@@ -168,42 +175,99 @@ def send_message_to_conversation(
     current_user: dict = Depends(get_current_user),
 ) -> SendMessageResponse:
     """
-    Guarda el mensaje del usuario, valida tokens, genera respuesta de IA
-    y devuelve ambos mensajes.
+    Guarda mensaje del usuario, valida seguridad, tokens y genera respuesta IA.
     """
     conversation = get_conversation_by_id(
         conversation_id=conversation_id,
-        user_id=current_user["id"]
+        user_id=current_user["id"],
     )
 
     if not conversation:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Conversación no encontrada."
+            detail="Conversación no encontrada.",
         )
 
     require_module_access(current_user, conversation["module"])
 
     # --------------------------------------------------------
-    # Validar tokens antes de llamar al modelo
+    # Validar tokens antes de llamar al modelo.
+    # Si se bloquea por seguridad, no se consume token.
     # --------------------------------------------------------
     can_send, token_status = can_send_message_with_tokens(current_user["id"])
 
     # --------------------------------------------------------
-    # Guardar mensaje del usuario
+    # Guardar mensaje del usuario.
+    # Esto deja evidencia del intento, pero el modelo no responde
+    # con contenido peligroso si se detecta algo sensible.
     # --------------------------------------------------------
     user_message_id = add_message(
         conversation_id=conversation_id,
         role="user",
-        content=payload.content
+        content=payload.content,
     )
 
     update_title_if_default(
         conversation_id=conversation_id,
         user_id=current_user["id"],
-        user_message=payload.content
+        user_message=payload.content,
     )
 
+    # --------------------------------------------------------
+    # Filtro parental para niños.
+    # Si detecta contenido no permitido:
+    # - no llama a Gemini
+    # - no consume token
+    # - registra evento
+    # - notifica al padre vinculado
+    # --------------------------------------------------------
+    if should_apply_child_safety_filter(current_user, conversation["module"]):
+        safety_result = analyze_content_safety(payload.content)
+
+        if safety_result.get("is_blocked"):
+            record_blocked_content_event(
+                user_id=current_user["id"],
+                module=conversation["module"],
+                conversation_id=conversation_id,
+                original_content=payload.content,
+                safety_result=safety_result,
+            )
+
+            assistant_message_id = add_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=safety_result["user_message"],
+            )
+
+            updated_messages = get_messages_by_conversation(
+                conversation_id=conversation_id,
+                user_id=current_user["id"],
+            )
+
+            user_message = next(
+                message
+                for message in updated_messages
+                if message["id"] == user_message_id
+            )
+
+            assistant_message = next(
+                message
+                for message in updated_messages
+                if message["id"] == assistant_message_id
+            )
+
+            return SendMessageResponse(
+                user_message=MessageOut(**user_message),
+                assistant_message=MessageOut(**assistant_message),
+                token_status=TokenStatusOut(**get_token_status(current_user["id"])),
+                blocked_by_safety=True,
+                safety_category=safety_result.get("category", ""),
+                safety_message=safety_result.get("user_message", ""),
+            )
+
+    # --------------------------------------------------------
+    # Si no tiene tokens, responde sin llamar al modelo.
+    # --------------------------------------------------------
     if not can_send:
         assistant_message_id = add_message(
             conversation_id=conversation_id,
@@ -213,11 +277,20 @@ def send_message_to_conversation(
 
         updated_messages = get_messages_by_conversation(
             conversation_id=conversation_id,
-            user_id=current_user["id"]
+            user_id=current_user["id"],
         )
 
-        user_message = next(message for message in updated_messages if message["id"] == user_message_id)
-        assistant_message = next(message for message in updated_messages if message["id"] == assistant_message_id)
+        user_message = next(
+            message
+            for message in updated_messages
+            if message["id"] == user_message_id
+        )
+
+        assistant_message = next(
+            message
+            for message in updated_messages
+            if message["id"] == assistant_message_id
+        )
 
         return SendMessageResponse(
             user_message=MessageOut(**user_message),
@@ -226,28 +299,28 @@ def send_message_to_conversation(
         )
 
     # --------------------------------------------------------
-    # Reconstruir historial actual para generar respuesta
+    # Reconstruir historial actual para el prompt.
     # --------------------------------------------------------
     mensajes = get_messages_by_conversation(
         conversation_id=conversation_id,
-        user_id=current_user["id"]
+        user_id=current_user["id"],
     )
 
     mensajes_prompt = [
         {
             "role": message["role"],
-            "content": message["content"]
+            "content": message["content"],
         }
         for message in mensajes
     ]
 
     # --------------------------------------------------------
-    # Seleccionar generador según módulo
+    # Generar respuesta según módulo.
     # --------------------------------------------------------
     try:
         if conversation["module"] == "biblioteca_inteligente":
             assistant_content = generar_respuesta_biblioteca_rag(
-                mensajes=mensajes_prompt
+                mensajes=mensajes_prompt,
             )
         else:
             assistant_content = generar_respuesta(
@@ -268,7 +341,7 @@ def send_message_to_conversation(
         )
 
     # --------------------------------------------------------
-    # Consumir token solo después de tener respuesta controlada
+    # Consumir token solo cuando sí hubo respuesta del modelo.
     # --------------------------------------------------------
     token_status = consume_user_token(
         user_id=current_user["id"],
@@ -279,26 +352,28 @@ def send_message_to_conversation(
     )
 
     # --------------------------------------------------------
-    # Guardar respuesta de la IA
+    # Guardar respuesta IA.
     # --------------------------------------------------------
     assistant_message_id = add_message(
         conversation_id=conversation_id,
         role="assistant",
-        content=assistant_content
+        content=assistant_content,
     )
 
     updated_messages = get_messages_by_conversation(
         conversation_id=conversation_id,
-        user_id=current_user["id"]
+        user_id=current_user["id"],
     )
 
     user_message = next(
-        message for message in updated_messages
+        message
+        for message in updated_messages
         if message["id"] == user_message_id
     )
 
     assistant_message = next(
-        message for message in updated_messages
+        message
+        for message in updated_messages
         if message["id"] == assistant_message_id
     )
 

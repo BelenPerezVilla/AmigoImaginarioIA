@@ -15,16 +15,20 @@ import { Ionicons } from "@expo/vector-icons";
 
 import {
   type AdminUser,
+  type ParentChildLink,
   type SupportContact,
   type SupportReply,
   type SupportRequest,
   adminAddSupportReplyRequest,
   adminCreateGuestRequest,
+  adminCreateParentChildLinkRequest,
   adminCreateSupportContactRequest,
   adminDeactivateGuestRequest,
   adminDeactivateSupportContactRequest,
+  adminDeleteParentChildLinkRequest,
   adminExtendGuestRequest,
   adminListGuestsRequest,
+  adminListParentChildLinksRequest,
   adminListRequestContactsRequest,
   adminListSupportContactsRequest,
   adminListSupportRepliesRequest,
@@ -42,6 +46,7 @@ type AdminTab =
   | "tokens"
   | "guests"
   | "crearGuest"
+  | "vinculos"
   | "apoyo"
   | "contactos";
 
@@ -88,14 +93,21 @@ export default function AdminScreen() {
   const [guests, setGuests] = useState<AdminUser[]>([]);
   const [supportRequests, setSupportRequests] = useState<SupportRequest[]>([]);
   const [supportContacts, setSupportContacts] = useState<SupportContact[]>([]);
+  const [parentChildLinks, setParentChildLinks] = useState<ParentChildLink[]>([]);
 
-  const [selectedRequest, setSelectedRequest] = useState<SupportRequest | null>(null);
+  const [selectedParentId, setSelectedParentId] = useState<number | null>(null);
+  const [selectedChildId, setSelectedChildId] = useState<number | null>(null);
+
+  const [selectedRequest, setSelectedRequest] =
+    useState<SupportRequest | null>(null);
   const [requestReplies, setRequestReplies] = useState<SupportReply[]>([]);
   const [requestContacts, setRequestContacts] = useState<SupportContact[]>([]);
   const [replyText, setReplyText] = useState("");
   const [recommendationNote, setRecommendationNote] = useState("");
 
-  const [tokenInputs, setTokenInputs] = useState<Record<number, TokenInputs>>({});
+  const [tokenInputs, setTokenInputs] = useState<Record<number, TokenInputs>>(
+    {}
+  );
 
   const [guestName, setGuestName] = useState("");
   const [guestUsername, setGuestUsername] = useState("");
@@ -127,13 +139,27 @@ export default function AdminScreen() {
     return users.filter((item) => item.role !== "superadmin");
   }, [users]);
 
+  const parentUsers = useMemo(() => {
+    return users.filter((item) =>
+      ["parent_admin", "guest_parent"].includes(item.role)
+    );
+  }, [users]);
+
+  const childUsers = useMemo(() => {
+    return users.filter((item) =>
+      ["child", "guest_child"].includes(item.role)
+    );
+  }, [users]);
+
   const buildTokenInputs = (items: AdminUser[]) => {
     const nextInputs: Record<number, TokenInputs> = {};
 
     items.forEach((item) => {
       nextInputs[item.id] = {
         daily_limit: String(item.token_status?.daily_limit ?? 20),
-        reset_interval_hours: String(item.token_status?.reset_interval_hours ?? 24),
+        reset_interval_hours: String(
+          item.token_status?.reset_interval_hours ?? 24
+        ),
         low_threshold: String(item.token_status?.low_threshold ?? 5),
       };
     });
@@ -152,20 +178,44 @@ export default function AdminScreen() {
         guestsData,
         supportRequestsData,
         supportContactsData,
+        parentChildLinksData,
       ] = await Promise.all([
         adminListUsersRequest(token),
         adminListGuestsRequest(token),
         adminListSupportRequestsRequest(token, "Todas"),
         adminListSupportContactsRequest(token),
+        adminListParentChildLinksRequest(token),
       ]);
 
       setUsers(usersData);
       setGuests(guestsData);
       setSupportRequests(supportRequestsData);
       setSupportContacts(supportContactsData);
+      setParentChildLinks(parentChildLinksData);
       buildTokenInputs(usersData);
+
+      const firstParent = usersData.find((item) =>
+        ["parent_admin", "guest_parent"].includes(item.role)
+      );
+
+      const firstChild = usersData.find((item) =>
+        ["child", "guest_child"].includes(item.role)
+      );
+
+      setSelectedParentId((prev) => {
+        const stillExists = usersData.some((item) => item.id === prev);
+        return stillExists ? prev : firstParent?.id || null;
+      });
+
+      setSelectedChildId((prev) => {
+        const stillExists = usersData.some((item) => item.id === prev);
+        return stillExists ? prev : firstChild?.id || null;
+      });
     } catch (error: any) {
-      Alert.alert("Error", error?.message || "No se pudo cargar administración.");
+      Alert.alert(
+        "Error",
+        error?.message || "No se pudo cargar administración."
+      );
     } finally {
       setLoading(false);
     }
@@ -231,7 +281,10 @@ export default function AdminScreen() {
       Alert.alert("Listo", "Tokens actualizados correctamente.");
       await loadData();
     } catch (error: any) {
-      Alert.alert("Error", error?.message || "No se pudieron actualizar los tokens.");
+      Alert.alert(
+        "Error",
+        error?.message || "No se pudieron actualizar los tokens."
+      );
     }
   };
 
@@ -294,6 +347,60 @@ export default function AdminScreen() {
       await loadData();
     } catch (error: any) {
       Alert.alert("Error", error?.message || "No se pudo desactivar el guest.");
+    }
+  };
+
+  const handleCreateParentChildLink = async () => {
+    if (!token) return;
+
+    if (!selectedParentId || !selectedChildId) {
+      Alert.alert("Validación", "Selecciona un padre y un hijo.");
+      return;
+    }
+
+    if (selectedParentId === selectedChildId) {
+      Alert.alert("Validación", "El padre y el hijo no pueden ser el mismo usuario.");
+      return;
+    }
+
+    try {
+      setActionLoading(true);
+
+      await adminCreateParentChildLinkRequest(token, {
+        parent_user_id: selectedParentId,
+        child_user_id: selectedChildId,
+      });
+
+      Alert.alert("Listo", "Padre e hijo vinculados correctamente.");
+      await loadData();
+    } catch (error: any) {
+      Alert.alert("Error", error?.message || "No se pudo crear el vínculo.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDeleteParentChildLink = async (
+    parentUserId: number,
+    childUserId: number
+  ) => {
+    if (!token) return;
+
+    try {
+      setActionLoading(true);
+
+      await adminDeleteParentChildLinkRequest(
+        token,
+        parentUserId,
+        childUserId
+      );
+
+      Alert.alert("Listo", "Vínculo eliminado correctamente.");
+      await loadData();
+    } catch (error: any) {
+      Alert.alert("Error", error?.message || "No se pudo eliminar el vínculo.");
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -404,7 +511,7 @@ export default function AdminScreen() {
       setRecommendationNote("");
       await reloadRequestDetails();
 
-      Alert.alert("Listo", "Contacto recomendado en la solicitud.");
+      Alert.alert("Listo", "Contacto del directorio recomendado en la solicitud.");
     } catch (error: any) {
       Alert.alert("Error", error?.message || "No se pudo recomendar el contacto.");
     } finally {
@@ -443,9 +550,9 @@ export default function AdminScreen() {
 
       await loadData();
 
-      Alert.alert("Listo", "Contacto guardado correctamente.");
+      Alert.alert("Listo", "Registro guardado correctamente en el directorio.");
     } catch (error: any) {
-      Alert.alert("Error", error?.message || "No se pudo crear el contacto.");
+      Alert.alert("Error", error?.message || "No se pudo crear el registro del directorio.");
     } finally {
       setActionLoading(false);
     }
@@ -460,9 +567,9 @@ export default function AdminScreen() {
       await adminDeactivateSupportContactRequest(token, contactId);
       await loadData();
 
-      Alert.alert("Listo", "Contacto desactivado.");
+      Alert.alert("Listo", "Registro desactivado.");
     } catch (error: any) {
-      Alert.alert("Error", error?.message || "No se pudo desactivar el contacto.");
+      Alert.alert("Error", error?.message || "No se pudo desactivar el registro del directorio.");
     } finally {
       setActionLoading(false);
     }
@@ -494,7 +601,7 @@ export default function AdminScreen() {
       <View style={styles.header}>
         <Text style={styles.title}>Administración</Text>
         <Text style={styles.text}>
-          Gestiona usuarios, tokens, guests, apoyo a padres y contactos.
+          Gestiona usuarios, tokens, guests, vínculos, apoyo a padres y directorio profesional.
         </Text>
       </View>
 
@@ -504,8 +611,9 @@ export default function AdminScreen() {
           ["tokens", "Tokens"],
           ["guests", "Guests"],
           ["crearGuest", "Crear"],
+          ["vinculos", "Vínculos"],
           ["apoyo", "Apoyo"],
-          ["contactos", "Contactos"],
+          ["contactos", "Directorio"],
         ].map(([key, label]) => (
           <Pressable
             key={key}
@@ -530,150 +638,175 @@ export default function AdminScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={refreshData} />
         }
       >
-        {tab === "usuarios" &&
-          permanentUsers.map((item) => (
-            <View key={item.id} style={styles.card}>
-              <Text style={styles.cardTitle}>{item.display_name}</Text>
-              <Text style={styles.text}>@{item.username}</Text>
-              <Text style={styles.text}>Rol actual: {roleLabel(item.role)}</Text>
-              <Text style={styles.text}>
-                Estado: {item.is_active ? "Activo" : "Inactivo"}
-              </Text>
+        {tab === "usuarios" && (
+          <>
+            {permanentUsers.length === 0 ? (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Sin usuarios</Text>
+                <Text style={styles.text}>No hay usuarios registrados.</Text>
+              </View>
+            ) : (
+              permanentUsers.map((item) => (
+                <View key={item.id} style={styles.card}>
+                  <Text style={styles.cardTitle}>{item.display_name}</Text>
+                  <Text style={styles.text}>@{item.username}</Text>
+                  <Text style={styles.text}>Rol actual: {roleLabel(item.role)}</Text>
+                  <Text style={styles.text}>
+                    Estado: {item.is_active ? "Activo" : "Inactivo"}
+                  </Text>
 
-              <Text style={styles.label}>Cambiar rol</Text>
+                  <Text style={styles.label}>Cambiar rol</Text>
 
-              <View style={styles.roleRow}>
-                {["superadmin", "parent_admin", "child"].map((role) => (
-                  <Pressable
-                    key={role}
-                    style={[
-                      styles.roleButton,
-                      item.role === role && styles.roleButtonActive,
-                    ]}
-                    onPress={() => handleChangeRole(item.id, role)}
-                  >
-                    <Text
-                      style={[
-                        styles.roleButtonText,
-                        item.role === role && styles.roleButtonTextActive,
-                      ]}
+                  <View style={styles.roleRow}>
+                    {["superadmin", "parent_admin", "child"].map((role) => (
+                      <Pressable
+                        key={role}
+                        style={[
+                          styles.roleButton,
+                          item.role === role && styles.roleButtonActive,
+                        ]}
+                        onPress={() => handleChangeRole(item.id, role)}
+                      >
+                        <Text
+                          style={[
+                            styles.roleButtonText,
+                            item.role === role && styles.roleButtonTextActive,
+                          ]}
+                        >
+                          {roleLabel(role)}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              ))
+            )}
+          </>
+        )}
+
+        {tab === "tokens" && (
+          <>
+            {tokenUsers.length === 0 ? (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Sin usuarios para tokens</Text>
+                <Text style={styles.text}>
+                  No hay usuarios configurables para tokens.
+                </Text>
+              </View>
+            ) : (
+              tokenUsers.map((item) => {
+                const values = tokenInputs[item.id] || {
+                  daily_limit: String(item.token_status?.daily_limit ?? 20),
+                  reset_interval_hours: String(
+                    item.token_status?.reset_interval_hours ?? 24
+                  ),
+                  low_threshold: String(item.token_status?.low_threshold ?? 5),
+                };
+
+                return (
+                  <View key={item.id} style={styles.card}>
+                    <Text style={styles.cardTitle}>{item.display_name}</Text>
+                    <Text style={styles.text}>@{item.username}</Text>
+                    <Text style={styles.text}>Rol: {roleLabel(item.role)}</Text>
+
+                    <View style={styles.tokenInfoBox}>
+                      <Text style={styles.tokenInfoText}>
+                        Restantes: {item.token_status?.remaining_tokens ?? 0}
+                      </Text>
+                      <Text style={styles.tokenInfoText}>
+                        Usados: {item.token_status?.used_tokens ?? 0}
+                      </Text>
+                      <Text style={styles.tokenInfoText}>
+                        Reinicio: {item.token_status?.reset_text || "-"}
+                      </Text>
+                    </View>
+
+                    <Text style={styles.label}>Límite diario</Text>
+                    <TextInput
+                      style={styles.input}
+                      keyboardType="numeric"
+                      value={values.daily_limit}
+                      onChangeText={(value) =>
+                        setTokenField(item.id, "daily_limit", value)
+                      }
+                    />
+
+                    <Text style={styles.label}>Reinicio cada cuántas horas</Text>
+                    <TextInput
+                      style={styles.input}
+                      keyboardType="numeric"
+                      value={values.reset_interval_hours}
+                      onChangeText={(value) =>
+                        setTokenField(item.id, "reset_interval_hours", value)
+                      }
+                    />
+
+                    <Text style={styles.label}>Alerta de pocos tokens</Text>
+                    <TextInput
+                      style={styles.input}
+                      keyboardType="numeric"
+                      value={values.low_threshold}
+                      onChangeText={(value) =>
+                        setTokenField(item.id, "low_threshold", value)
+                      }
+                    />
+
+                    <Pressable
+                      style={styles.primaryButton}
+                      onPress={() => handleUpdateTokens(item)}
                     >
-                      {roleLabel(role)}
-                    </Text>
-                  </Pressable>
-                ))}
+                      <Text style={styles.primaryButtonText}>Guardar tokens</Text>
+                    </Pressable>
+                  </View>
+                );
+              })
+            )}
+          </>
+        )}
+
+        {tab === "guests" && (
+          <>
+            {guests.length === 0 ? (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Sin cuentas guest</Text>
+                <Text style={styles.text}>Todavía no has creado cuentas guest.</Text>
               </View>
-            </View>
-          ))}
-
-        {tab === "tokens" &&
-          tokenUsers.map((item) => {
-            const values = tokenInputs[item.id] || {
-              daily_limit: String(item.token_status?.daily_limit ?? 20),
-              reset_interval_hours: String(
-                item.token_status?.reset_interval_hours ?? 24
-              ),
-              low_threshold: String(item.token_status?.low_threshold ?? 5),
-            };
-
-            return (
-              <View key={item.id} style={styles.card}>
-                <Text style={styles.cardTitle}>{item.display_name}</Text>
-                <Text style={styles.text}>@{item.username}</Text>
-                <Text style={styles.text}>Rol: {roleLabel(item.role)}</Text>
-
-                <View style={styles.tokenInfoBox}>
-                  <Text style={styles.tokenInfoText}>
-                    Restantes: {item.token_status?.remaining_tokens ?? 0}
+            ) : (
+              guests.map((item) => (
+                <View key={item.id} style={styles.card}>
+                  <Text style={styles.cardTitle}>{item.display_name}</Text>
+                  <Text style={styles.text}>@{item.username}</Text>
+                  <Text style={styles.text}>Rol: {roleLabel(item.role)}</Text>
+                  <Text style={styles.text}>
+                    Estado: {statusLabel(item.guest_status)}
                   </Text>
-                  <Text style={styles.tokenInfoText}>
-                    Usados: {item.token_status?.used_tokens ?? 0}
+                  <Text style={styles.text}>
+                    Horas asignadas: {item.guest_hours || 0}
                   </Text>
-                  <Text style={styles.tokenInfoText}>
-                    Reinicio: {item.token_status?.reset_text || "-"}
+                  <Text style={styles.text}>
+                    Expira: {item.guest_expires_at || "-"}
                   </Text>
+
+                  <View style={styles.actionsRow}>
+                    <Pressable
+                      style={styles.secondaryButton}
+                      onPress={() => handleExtendGuest(item.id)}
+                    >
+                      <Text style={styles.secondaryButtonText}>+1 hora</Text>
+                    </Pressable>
+
+                    <Pressable
+                      style={styles.dangerButton}
+                      onPress={() => handleDeactivateGuest(item.id)}
+                    >
+                      <Text style={styles.dangerButtonText}>Desactivar</Text>
+                    </Pressable>
+                  </View>
                 </View>
-
-                <Text style={styles.label}>Límite diario</Text>
-                <TextInput
-                  style={styles.input}
-                  keyboardType="numeric"
-                  value={values.daily_limit}
-                  onChangeText={(value) =>
-                    setTokenField(item.id, "daily_limit", value)
-                  }
-                />
-
-                <Text style={styles.label}>Reinicio cada cuántas horas</Text>
-                <TextInput
-                  style={styles.input}
-                  keyboardType="numeric"
-                  value={values.reset_interval_hours}
-                  onChangeText={(value) =>
-                    setTokenField(item.id, "reset_interval_hours", value)
-                  }
-                />
-
-                <Text style={styles.label}>Alerta de pocos tokens</Text>
-                <TextInput
-                  style={styles.input}
-                  keyboardType="numeric"
-                  value={values.low_threshold}
-                  onChangeText={(value) =>
-                    setTokenField(item.id, "low_threshold", value)
-                  }
-                />
-
-                <Pressable
-                  style={styles.primaryButton}
-                  onPress={() => handleUpdateTokens(item)}
-                >
-                  <Text style={styles.primaryButtonText}>Guardar tokens</Text>
-                </Pressable>
-              </View>
-            );
-          })}
-
-        {tab === "guests" &&
-          (guests.length === 0 ? (
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Sin cuentas guest</Text>
-              <Text style={styles.text}>Todavía no has creado cuentas guest.</Text>
-            </View>
-          ) : (
-            guests.map((item) => (
-              <View key={item.id} style={styles.card}>
-                <Text style={styles.cardTitle}>{item.display_name}</Text>
-                <Text style={styles.text}>@{item.username}</Text>
-                <Text style={styles.text}>Rol: {roleLabel(item.role)}</Text>
-                <Text style={styles.text}>
-                  Estado: {statusLabel(item.guest_status)}
-                </Text>
-                <Text style={styles.text}>
-                  Horas asignadas: {item.guest_hours || 0}
-                </Text>
-                <Text style={styles.text}>
-                  Expira: {item.guest_expires_at || "-"}
-                </Text>
-
-                <View style={styles.actionsRow}>
-                  <Pressable
-                    style={styles.secondaryButton}
-                    onPress={() => handleExtendGuest(item.id)}
-                  >
-                    <Text style={styles.secondaryButtonText}>+1 hora</Text>
-                  </Pressable>
-
-                  <Pressable
-                    style={styles.dangerButton}
-                    onPress={() => handleDeactivateGuest(item.id)}
-                  >
-                    <Text style={styles.dangerButtonText}>Desactivar</Text>
-                  </Pressable>
-                </View>
-              </View>
-            ))
-          ))}
+              ))
+            )}
+          </>
+        )}
 
         {tab === "crearGuest" && (
           <View style={styles.card}>
@@ -765,6 +898,151 @@ export default function AdminScreen() {
           </View>
         )}
 
+        {tab === "vinculos" && (
+          <>
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Vincular padre con hijo</Text>
+              <Text style={styles.text}>
+                Selecciona una cuenta de padre y una cuenta de niño para que el
+                padre pueda ver el seguimiento en Modo Padres.
+              </Text>
+
+              <Text style={styles.label}>Padre / madre</Text>
+
+              {parentUsers.length === 0 ? (
+                <Text style={styles.text}>No hay usuarios con rol de padre.</Text>
+              ) : (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.horizontalChipContent}
+                >
+                  {parentUsers.map((parent) => {
+                    const active = selectedParentId === parent.id;
+
+                    return (
+                      <Pressable
+                        key={parent.id}
+                        style={[
+                          styles.roleButton,
+                          active && styles.roleButtonActive,
+                        ]}
+                        onPress={() => setSelectedParentId(parent.id)}
+                      >
+                        <Text
+                          style={[
+                            styles.roleButtonText,
+                            active && styles.roleButtonTextActive,
+                          ]}
+                        >
+                          {parent.display_name}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.smallChipText,
+                            active && styles.roleButtonTextActive,
+                          ]}
+                        >
+                          @{parent.username}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              )}
+
+              <Text style={styles.label}>Hijo</Text>
+
+              {childUsers.length === 0 ? (
+                <Text style={styles.text}>No hay usuarios con rol de niño.</Text>
+              ) : (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.horizontalChipContent}
+                >
+                  {childUsers.map((child) => {
+                    const active = selectedChildId === child.id;
+
+                    return (
+                      <Pressable
+                        key={child.id}
+                        style={[
+                          styles.roleButton,
+                          active && styles.roleButtonActive,
+                        ]}
+                        onPress={() => setSelectedChildId(child.id)}
+                      >
+                        <Text
+                          style={[
+                            styles.roleButtonText,
+                            active && styles.roleButtonTextActive,
+                          ]}
+                        >
+                          {child.display_name}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.smallChipText,
+                            active && styles.roleButtonTextActive,
+                          ]}
+                        >
+                          @{child.username}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              )}
+
+              <Pressable
+                style={[styles.primaryButton, actionLoading && styles.disabled]}
+                onPress={handleCreateParentChildLink}
+                disabled={actionLoading}
+              >
+                <Text style={styles.primaryButtonText}>
+                  Vincular padre con hijo
+                </Text>
+              </Pressable>
+            </View>
+
+            <Text style={styles.sectionTitle}>Vínculos existentes</Text>
+
+            {parentChildLinks.length === 0 ? (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Sin vínculos</Text>
+                <Text style={styles.text}>
+                  Todavía no hay padres vinculados con hijos.
+                </Text>
+              </View>
+            ) : (
+              parentChildLinks.map((link) => (
+                <View key={link.id} style={styles.card}>
+                  <Text style={styles.cardTitle}>
+                    {link.parent_name} → {link.child_name}
+                  </Text>
+
+                  <Text style={styles.text}>Padre: @{link.parent_username}</Text>
+                  <Text style={styles.text}>Hijo: @{link.child_username}</Text>
+                  <Text style={styles.text}>Fecha: {link.created_at}</Text>
+
+                  <Pressable
+                    style={styles.dangerButtonFull}
+                    onPress={() =>
+                      handleDeleteParentChildLink(
+                        link.parent_user_id,
+                        link.child_user_id
+                      )
+                    }
+                  >
+                    <Text style={styles.dangerButtonText}>Eliminar vínculo</Text>
+                  </Pressable>
+                </View>
+              ))
+            )}
+          </>
+        )}
+
         {tab === "apoyo" && (
           <>
             {supportRequests.length === 0 ? (
@@ -808,9 +1086,9 @@ export default function AdminScreen() {
         {tab === "contactos" && (
           <>
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>Nuevo contacto recomendado</Text>
+              <Text style={styles.cardTitle}>Nuevo registro del directorio</Text>
 
-              <Text style={styles.label}>Nombre o lugar</Text>
+              <Text style={styles.label}>Nombre del profesional, centro o institución</Text>
               <TextInput
                 style={styles.input}
                 value={contactName}
@@ -871,23 +1149,33 @@ export default function AdminScreen() {
                 onPress={handleCreateContact}
                 disabled={actionLoading}
               >
-                <Text style={styles.primaryButtonText}>Guardar contacto</Text>
+                <Text style={styles.primaryButtonText}>Guardar en directorio</Text>
               </Pressable>
             </View>
 
             {supportContacts.map((contact) => (
               <View key={contact.id} style={styles.card}>
                 <Text style={styles.cardTitle}>{contact.name}</Text>
-                <Text style={styles.text}>Especialidad: {contact.specialty || "-"}</Text>
+                <Text style={styles.text}>
+                  Especialidad: {contact.specialty || "-"}
+                </Text>
                 {!!contact.organization && (
-                  <Text style={styles.text}>Organización: {contact.organization}</Text>
+                  <Text style={styles.text}>
+                    Organización: {contact.organization}
+                  </Text>
                 )}
-                {!!contact.phone && <Text style={styles.text}>Teléfono: {contact.phone}</Text>}
-                {!!contact.email && <Text style={styles.text}>Correo: {contact.email}</Text>}
+                {!!contact.phone && (
+                  <Text style={styles.text}>Teléfono: {contact.phone}</Text>
+                )}
+                {!!contact.email && (
+                  <Text style={styles.text}>Correo: {contact.email}</Text>
+                )}
                 {!!contact.address && (
                   <Text style={styles.text}>Dirección: {contact.address}</Text>
                 )}
-                {!!contact.notes && <Text style={styles.text}>Notas: {contact.notes}</Text>}
+                {!!contact.notes && (
+                  <Text style={styles.text}>Notas: {contact.notes}</Text>
+                )}
                 <Text style={styles.text}>
                   Estado: {Number(contact.is_active) === 1 ? "Activo" : "Inactivo"}
                 </Text>
@@ -897,7 +1185,9 @@ export default function AdminScreen() {
                     style={styles.dangerButtonFull}
                     onPress={() => handleDeactivateContact(contact.id)}
                   >
-                    <Text style={styles.dangerButtonText}>Desactivar contacto</Text>
+                    <Text style={styles.dangerButtonText}>
+                      Desactivar contacto
+                    </Text>
                   </Pressable>
                 )}
               </View>
@@ -935,10 +1225,16 @@ export default function AdminScreen() {
                   Prioridad: {selectedRequest?.priority}
                 </Text>
                 <Text style={styles.text}>
-                  Padre: {selectedRequest?.parent_name || selectedRequest?.parent_username || "-"}
+                  Padre:{" "}
+                  {selectedRequest?.parent_name ||
+                    selectedRequest?.parent_username ||
+                    "-"}
                 </Text>
                 <Text style={styles.text}>
-                  Niño: {selectedRequest?.child_name || selectedRequest?.child_username || "General"}
+                  Niño:{" "}
+                  {selectedRequest?.child_name ||
+                    selectedRequest?.child_username ||
+                    "General"}
                 </Text>
 
                 <Text style={styles.modalSectionTitle}>Mensaje del padre</Text>
@@ -952,7 +1248,8 @@ export default function AdminScreen() {
                       key={status}
                       style={[
                         styles.roleButton,
-                        selectedRequest?.status === status && styles.roleButtonActive,
+                        selectedRequest?.status === status &&
+                          styles.roleButtonActive,
                       ]}
                       onPress={() => handleUpdateRequestStatus(status)}
                     >
@@ -1000,11 +1297,13 @@ export default function AdminScreen() {
                   ))
                 )}
 
-                <Text style={styles.modalSectionTitle}>Contactos recomendados</Text>
+                <Text style={styles.modalSectionTitle}>
+                  Directorio profesional
+                </Text>
 
                 {requestContacts.length === 0 ? (
                   <Text style={styles.text}>
-                    No hay contactos recomendados en esta solicitud.
+                    No hay registros del directorio recomendados en esta solicitud.
                   </Text>
                 ) : (
                   requestContacts.map((contact) => (
@@ -1028,7 +1327,9 @@ export default function AdminScreen() {
                   ))
                 )}
 
-                <Text style={styles.modalSectionTitle}>Recomendar otro contacto</Text>
+                <Text style={styles.modalSectionTitle}>
+                  Recomendar otro contacto
+                </Text>
 
                 <TextInput
                   style={[styles.input, styles.multilineInputSmall]}
@@ -1139,6 +1440,13 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     marginBottom: 6,
   },
+  sectionTitle: {
+    color: "#0f172a",
+    fontSize: 19,
+    fontWeight: "900",
+    marginBottom: 12,
+    marginTop: 4,
+  },
   label: {
     color: "#334155",
     fontWeight: "800",
@@ -1150,6 +1458,11 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 8,
     marginTop: 6,
+  },
+  horizontalChipContent: {
+    gap: 8,
+    paddingRight: 12,
+    paddingVertical: 4,
   },
   roleButton: {
     backgroundColor: "#e9eef8",
@@ -1167,6 +1480,12 @@ const styles = StyleSheet.create({
   },
   roleButtonTextActive: {
     color: "#ffffff",
+  },
+  smallChipText: {
+    color: "#64748b",
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 2,
   },
   tokenInfoBox: {
     backgroundColor: "#f8fafc",

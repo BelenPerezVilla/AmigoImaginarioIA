@@ -45,7 +45,9 @@ export function canSeePadres(user?: AppUser | null): boolean {
 }
 
 export function canSeeAdmin(user?: AppUser | null): boolean {
-  return isSuperadmin(user) || Boolean(user?.permissions?.can_access_admin);
+  // Solo el superadmin puede ver Administración.
+  // No se permite mostrar esta opción a padre, niño o usuario invitado.
+  return isSuperadmin(user);
 }
 
 export function canChatWithAmigo(user?: AppUser | null): boolean {

@@ -381,9 +381,20 @@ export default function ChatModuleScreen({
         content,
         token
       );
-
       if (result.token_status) {
         setTokenStatus(result.token_status);
+      }
+
+           // ------------------------------------------------------
+      // Si el backend bloqueó contenido sensible, mostramos
+      // una alerta clara al usuario y no dejamos pasar el tema.
+      // ------------------------------------------------------
+      if (result.blocked_by_safety) {
+        Alert.alert(
+        "Contenido bloqueado",
+        result.safety_message ||
+        "Este tema fue bloqueado para mantener un espacio seguro."
+      );
       }
 
       setMessages((prev) => [

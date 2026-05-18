@@ -1,19 +1,29 @@
 {
   "expo": {
-    "name": "Amigo Imaginario",
-    "slug": "amigo-imaginario-mobile",
-    "scheme": "amigoimaginario",
+    "name": "AbrazoIA",
+    "slug": "abrazoia-mobile",
+    "scheme": "abrazoia",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/images/abrazoia_logo.png",
+    "splash": {
+      "image": "./assets/images/abrazoia_logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#F7F8FC"
+    },
     "plugins": [
       "expo-router",
       "expo-secure-store"
     ],
     "android": {
-      "package": "com.amigoimaginario.mobile"
+      "package": "com.abrazoia.mobile",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/abrazoia_logo.png",
+        "backgroundColor": "#F7F8FC"
+      }
     },
     "ios": {
-      "bundleIdentifier": "com.amigoimaginario.mobile"
+      "bundleIdentifier": "com.abrazoia.mobile"
     }
   }
 }

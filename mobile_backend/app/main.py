@@ -8,23 +8,28 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from database.chat_db import initialize_database
 from database.support_db import initialize_support_schema
+from database.safety_db import initialize_safety_schema
 from mobile_backend.app.core.config import ALLOWED_ORIGINS
 from mobile_backend.app.routers import admin, auth, chats, library, tokens, support
+
 
 # ------------------------------------------------------------
 # Crear aplicación FastAPI
 # ------------------------------------------------------------
 app = FastAPI(
-    title="Amigo Imaginario Mobile API",
+    title="AbrazoIA Mobile API",
     version="1.0.0",
-    description="API base para la app móvil del proyecto."
+    description="API base para la app móvil del proyecto AbrazoIA."
 )
+
 
 # ------------------------------------------------------------
 # Inicializar base de datos al arrancar
 # ------------------------------------------------------------
 initialize_database()
 initialize_support_schema()
+initialize_safety_schema()
+
 
 # ------------------------------------------------------------
 # Configurar CORS para Expo / móvil
@@ -36,6 +41,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ------------------------------------------------------------
 # Registrar routers
@@ -58,5 +64,5 @@ def healthcheck() -> dict:
     """
     return {
         "ok": True,
-        "service": "mobile-backend"
+        "service": "mobile-backend",
     }

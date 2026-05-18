@@ -1,7 +1,12 @@
-// Pantalla de login y registro
+// ============================================================
+// mobile/app/(auth)/login.tsx
+// Pantalla de login y registro con identidad visual AbrazoIA.
+// ============================================================
+
 import { useState } from "react";
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -15,6 +20,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Redirect } from "expo-router";
 
 import { useAuth } from "../../src/lib/auth";
+import { BRAND, BRAND_LOGO } from "../../src/lib/brand";
 
 export default function LoginScreen() {
   const { token, signIn, signUp, isLoading } = useAuth();
@@ -24,13 +30,14 @@ export default function LoginScreen() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorText, setErrorText] = useState("");
 
   if (isLoading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#2f64b9" />
+        <ActivityIndicator size="large" color={BRAND.colors.coralDark} />
       </View>
     );
   }
@@ -39,42 +46,52 @@ export default function LoginScreen() {
     return <Redirect href="/(tabs)/home" />;
   }
 
- const handleSubmit = async () => {
-  try {
-    setErrorText("");
-    setSubmitting(true);
+  const handleSubmit = async () => {
+    try {
+      setErrorText("");
+      setSubmitting(true);
 
-    if (!username.trim()) {
-      setErrorText("Escribe un nombre de usuario.");
-      return;
-    }
-
-    if (username.trim().length < 3) {
-      setErrorText("El nombre de usuario debe tener al menos 3 caracteres.");
-      return;
-    }
-
-    if (password.length < 8) {
-      setErrorText("La contraseña debe tener al menos 8 caracteres.");
-      return;
-    }
-
-    if (mode === "register") {
-      if (password !== confirmPassword) {
-        setErrorText("Las contraseñas no coinciden.");
+      if (!username.trim()) {
+        setErrorText("Escribe un nombre de usuario.");
         return;
       }
 
-      await signUp(displayName, username, password);
-    } else {
-      await signIn(username, password);
+      if (username.trim().length < 3) {
+        setErrorText("El nombre de usuario debe tener al menos 3 caracteres.");
+        return;
+      }
+
+      if (password.length < 8) {
+        setErrorText("La contraseña debe tener al menos 8 caracteres.");
+        return;
+      }
+
+      if (!acceptedTerms) {
+        setErrorText("Debes leer y aceptar el uso y condiciones para continuar.");
+        return;
+      }
+
+      if (mode === "register") {
+        if (!displayName.trim()) {
+          setErrorText("Escribe tu nombre visible.");
+          return;
+        }
+
+        if (password !== confirmPassword) {
+          setErrorText("Las contraseñas no coinciden.");
+          return;
+        }
+
+        await signUp(displayName, username, password);
+      } else {
+        await signIn(username, password);
+      }
+    } catch (error: any) {
+      setErrorText(error?.message || "No se pudo completar la acción.");
+    } finally {
+      setSubmitting(false);
     }
-  } catch (error: any) {
-    setErrorText(error?.message || "No se pudo completar la acción.");
-  } finally {
-    setSubmitting(false);
-  }
-};
+  };
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -82,17 +99,24 @@ export default function LoginScreen() {
         style={styles.flex}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <ScrollView contentContainerStyle={styles.container}>
-          <View style={styles.heroCard}>
-            <Text style={styles.title}>Amigo Imaginario</Text>
-            <Text style={styles.subtitle}>
-              Accede a tu espacio de conversación, biblioteca y apoyo.
-            </Text>
+        <ScrollView
+          contentContainerStyle={styles.container}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View style={styles.brandCard}>
+            <Image source={BRAND_LOGO} style={styles.logo} resizeMode="contain" />
+
+            <Text style={styles.title}>{BRAND.name}</Text>
+            <Text style={styles.tagline}>{BRAND.tagline}</Text>
+            <Text style={styles.subtitle}>{BRAND.shortDescription}</Text>
           </View>
 
           <View style={styles.modeRow}>
             <Pressable
-              style={[styles.modeButton, mode === "login" && styles.modeButtonActive]}
+              style={[
+                styles.modeButton,
+                mode === "login" && styles.modeButtonActive,
+              ]}
               onPress={() => setMode("login")}
             >
               <Text
@@ -106,7 +130,10 @@ export default function LoginScreen() {
             </Pressable>
 
             <Pressable
-              style={[styles.modeButton, mode === "register" && styles.modeButtonActive]}
+              style={[
+                styles.modeButton,
+                mode === "register" && styles.modeButtonActive,
+              ]}
               onPress={() => setMode("register")}
             >
               <Text
@@ -121,10 +148,20 @@ export default function LoginScreen() {
           </View>
 
           <View style={styles.formCard}>
+            <Text style={styles.formTitle}>
+              {mode === "login" ? "Bienvenido de nuevo" : "Crear cuenta"}
+            </Text>
+            <Text style={styles.formSubtitle}>
+              {mode === "login"
+                ? "Entra a tu espacio de acompañamiento."
+                : "Crea una cuenta para comenzar con AbrazoIA."}
+            </Text>
+
             {mode === "register" && (
               <TextInput
                 style={styles.input}
                 placeholder="Nombre visible"
+                placeholderTextColor="#94a3b8"
                 value={displayName}
                 onChangeText={setDisplayName}
               />
@@ -133,6 +170,7 @@ export default function LoginScreen() {
             <TextInput
               style={styles.input}
               placeholder="Nombre de usuario"
+              placeholderTextColor="#94a3b8"
               value={username}
               onChangeText={setUsername}
               autoCapitalize="none"
@@ -141,6 +179,7 @@ export default function LoginScreen() {
             <TextInput
               style={styles.input}
               placeholder="Contraseña"
+              placeholderTextColor="#94a3b8"
               value={password}
               onChangeText={setPassword}
               secureTextEntry
@@ -150,11 +189,27 @@ export default function LoginScreen() {
               <TextInput
                 style={styles.input}
                 placeholder="Confirmar contraseña"
+                placeholderTextColor="#94a3b8"
                 value={confirmPassword}
                 onChangeText={setConfirmPassword}
                 secureTextEntry
               />
             )}
+
+            <Pressable
+              style={styles.termsBox}
+              onPress={() => setAcceptedTerms((prev) => !prev)}
+            >
+              <View style={[styles.checkbox, acceptedTerms && styles.checkboxActive]}>
+                {acceptedTerms && <Text style={styles.checkboxCheck}>✓</Text>}
+              </View>
+
+              <Text style={styles.termsText}>
+                He leído y acepto el uso y condiciones de AbrazoIA. Entiendo que
+                es una herramienta de apoyo y orientación, no sustituye atención
+                médica, psicológica ni terapéutica profesional.
+              </Text>
+            </Pressable>
 
             {!!errorText && <Text style={styles.errorText}>{errorText}</Text>}
 
@@ -167,13 +222,14 @@ export default function LoginScreen() {
                 {submitting
                   ? "Procesando..."
                   : mode === "login"
-                  ? "Entrar"
+                  ? "Entrar a AbrazoIA"
                   : "Crear cuenta"}
               </Text>
             </Pressable>
 
             <Text style={styles.noteText}>
-              Login con Google móvil lo agregamos en la siguiente fase.
+              Plataforma de apoyo y orientación. No sustituye atención médica,
+              psicológica ni terapéutica profesional.
             </Text>
           </View>
         </ScrollView>
@@ -185,14 +241,14 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: "#f5f7fb",
+    backgroundColor: BRAND.colors.background,
   },
   flex: {
     flex: 1,
   },
   centered: {
     flex: 1,
-    backgroundColor: "#f5f7fb",
+    backgroundColor: BRAND.colors.background,
     justifyContent: "center",
     alignItems: "center",
   },
@@ -201,22 +257,42 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     flexGrow: 1,
   },
-  heroCard: {
-    backgroundColor: "#2f64b9",
-    borderRadius: 22,
+  brandCard: {
+    backgroundColor: BRAND.colors.card,
+    borderRadius: 28,
     padding: 22,
-    marginBottom: 20,
+    marginBottom: 18,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#F1E8F6",
+    shadowColor: "#000",
+    shadowOpacity: 0.06,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 3,
+  },
+  logo: {
+    width: 210,
+    height: 210,
+    marginBottom: 4,
   },
   title: {
-    color: "#ffffff",
-    fontSize: 28,
-    fontWeight: "800",
+    color: BRAND.colors.purple,
+    fontSize: 32,
+    fontWeight: "900",
+  },
+  tagline: {
+    color: BRAND.colors.coralDark,
+    marginTop: 6,
+    fontWeight: "900",
+    textAlign: "center",
   },
   subtitle: {
-    color: "#dbeafe",
+    color: BRAND.colors.muted,
     marginTop: 8,
     lineHeight: 20,
     fontSize: 14,
+    textAlign: "center",
   },
   modeRow: {
     flexDirection: "row",
@@ -225,24 +301,24 @@ const styles = StyleSheet.create({
   },
   modeButton: {
     flex: 1,
-    backgroundColor: "#e5e7eb",
+    backgroundColor: "#E9EEF8",
     paddingVertical: 12,
-    borderRadius: 14,
+    borderRadius: 16,
     alignItems: "center",
   },
   modeButtonActive: {
-    backgroundColor: "#ffffff",
+    backgroundColor: BRAND.colors.coral,
   },
   modeButtonText: {
     color: "#334155",
-    fontWeight: "700",
+    fontWeight: "800",
   },
   modeButtonTextActive: {
-    color: "#0f172a",
+    color: "#ffffff",
   },
   formCard: {
-    backgroundColor: "#ffffff",
-    borderRadius: 22,
+    backgroundColor: BRAND.colors.card,
+    borderRadius: 24,
     padding: 18,
     shadowColor: "#000",
     shadowOpacity: 0.05,
@@ -250,8 +326,19 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     elevation: 2,
   },
+  formTitle: {
+    color: BRAND.colors.text,
+    fontSize: 22,
+    fontWeight: "900",
+  },
+  formSubtitle: {
+    color: BRAND.colors.muted,
+    marginTop: 4,
+    marginBottom: 14,
+    lineHeight: 20,
+  },
   input: {
-    backgroundColor: "#f8fafc",
+    backgroundColor: "#F8FAFC",
     borderRadius: 14,
     paddingHorizontal: 14,
     paddingVertical: 14,
@@ -259,13 +346,45 @@ const styles = StyleSheet.create({
     color: "#111827",
     marginBottom: 12,
   },
+  termsBox: {
+    flexDirection: "row",
+    gap: 10,
+    backgroundColor: "#f8fafc",
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 12,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 7,
+    borderWidth: 2,
+    borderColor: BRAND.colors.coralDark,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 2,
+  },
+  checkboxActive: {
+    backgroundColor: BRAND.colors.coralDark,
+  },
+  checkboxCheck: {
+    color: "#ffffff",
+    fontWeight: "900",
+    fontSize: 14,
+  },
+  termsText: {
+    flex: 1,
+    color: "#64748b",
+    lineHeight: 18,
+    fontSize: 12,
+  },
   errorText: {
-    color: "#dc2626",
+    color: "#DC2626",
     marginBottom: 10,
-    fontWeight: "600",
+    fontWeight: "700",
   },
   submitButton: {
-    backgroundColor: "#2f64b9",
+    backgroundColor: BRAND.colors.purple,
     paddingVertical: 14,
     borderRadius: 14,
     alignItems: "center",
@@ -275,13 +394,14 @@ const styles = StyleSheet.create({
   },
   submitButtonText: {
     color: "#ffffff",
-    fontWeight: "800",
+    fontWeight: "900",
     fontSize: 15,
   },
   noteText: {
     marginTop: 12,
-    color: "#64748b",
+    color: BRAND.colors.muted,
     textAlign: "center",
-    fontSize: 13,
+    fontSize: 12,
+    lineHeight: 18,
   },
 });

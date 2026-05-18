@@ -1,6 +1,6 @@
 // ============================================================
 // mobile/app/(tabs)/_layout.tsx
-// Layout protegido por sesión y navegación por rol.
+// Layout protegido por sesión, navegación por rol y marca AbrazoIA.
 // ============================================================
 
 import React from "react";
@@ -8,6 +8,7 @@ import { Redirect, Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { useAuth } from "../../src/lib/auth";
+import { BRAND } from "../../src/lib/brand";
 
 export default function TabsLayout() {
   const { token, isLoading, user } = useAuth();
@@ -38,22 +39,29 @@ export default function TabsLayout() {
     isParent ||
     Boolean(user?.permissions?.can_access_modo_padres);
 
-  const canShowAdmin =
-    isSuperadmin ||
-    Boolean(user?.permissions?.can_access_admin);
+  // Administración solo debe aparecer al superadmin.
+  // Padres, niños e invitados no deben ver esta pestaña aunque tuvieran
+  // permisos heredados en una sesión vieja.
+  const canShowAdmin = isSuperadmin;
 
   return (
     <Tabs
       screenOptions={{
         headerShown: true,
-        tabBarActiveTintColor: "#2f64b9",
+        headerTitleStyle: {
+          color: BRAND.colors.purple,
+          fontWeight: "900",
+        },
+        headerTintColor: BRAND.colors.purple,
+        tabBarActiveTintColor: BRAND.colors.coralDark,
         tabBarInactiveTintColor: "#94a3b8",
       }}
     >
       <Tabs.Screen
         name="home"
         options={{
-          title: "Inicio",
+          title: BRAND.name,
+          tabBarLabel: "Inicio",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="home" color={color} size={size} />
           ),

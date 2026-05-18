@@ -33,6 +33,11 @@ from database.chat_db import (
     update_friend_profile,
     update_imaginary_friend_profile,
 )
+# Funciones para consultar y marcar alertas parentales
+from database.safety_db import (
+    list_parental_notifications,
+    mark_parental_notification_read,
+)
 from database.support_db import parent_can_view_child
 from mobile_backend.app.schemas import (
     UpdateFriendPreferencesRequest,
@@ -136,7 +141,22 @@ class ContactRecommendationOut(BaseModel):
     should_show: bool
     message: str
     contacts: list[SupportContactOut]
-
+# ------------------------------------------------------------
+# Salida para alertas parentales
+# ------------------------------------------------------------
+class ParentalNotificationOut(BaseModel):
+    id: int
+    parent_user_id: int
+    child_user_id: int
+    safety_event_id: Optional[int] = None
+    title: str
+    message: str
+    category: str = ""
+    is_read: int = 0
+    created_at: str = ""
+    read_at: Optional[str] = None
+    child_name: str = ""
+    child_username: str = ""
 
 # ============================================================
 # Helpers de permisos
@@ -183,6 +203,55 @@ def ensure_parent_owns_request(current_user: dict, request_id: int) -> dict:
 
     return request
 
+# ============================================================
+# Alertas parentales
+# ============================================================
+
+@router.get("/parental-notifications", response_model=list[ParentalNotificationOut])
+def get_parental_notifications(
+    unread_only: bool = Query(default=False),
+    current_user: dict = Depends(get_current_user),
+) -> list[ParentalNotificationOut]:
+    """
+    Lista notificaciones parentales generadas cuando el filtro
+    bloquea contenido sensible en una cuenta de hijo vinculada.
+    """
+    require_parent_or_superadmin(current_user)
+
+    notifications = list_parental_notifications(
+        parent_user_id=current_user["id"],
+        unread_only=unread_only,
+        limit=100,
+    )
+
+    return [
+        ParentalNotificationOut(**notification)
+        for notification in notifications
+    ]
+
+
+@router.patch("/parental-notifications/{notification_id}/read", response_model=ParentalNotificationOut)
+def read_parental_notification(
+    notification_id: int,
+    current_user: dict = Depends(get_current_user),
+) -> ParentalNotificationOut:
+    """
+    Marca una notificación parental como leída.
+    """
+    require_parent_or_superadmin(current_user)
+
+    try:
+        notification = mark_parental_notification_read(
+            parent_user_id=current_user["id"],
+            notification_id=notification_id,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(error),
+        ) from error
+
+    return ParentalNotificationOut(**notification)
 
 # ============================================================
 # Contactos recomendados

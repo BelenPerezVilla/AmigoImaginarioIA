@@ -20,6 +20,7 @@
 # Importaciones estándar
 # ------------------------------------------------------------
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote
 import csv
 import io
@@ -140,6 +141,13 @@ from database.support_db import (
     unlink_parent_child,
     update_support_request_status,
 )
+from database.safety_db import (
+    PARENT_TERMS_TEXT,
+    analyze_content_safety,
+    initialize_safety_schema,
+    record_blocked_content_event,
+    should_apply_child_safety_filter,
+)
 
 # ------------------------------------------------------------
 # Configuración visual, prompts y ayudas del amigo imaginario
@@ -209,10 +217,30 @@ from utils.avatar_svg import (
 # Configuración general de la página
 # ------------------------------------------------------------
 st.set_page_config(
-    page_title="Amigo Imaginario Neurodivergente",
-    page_icon="💙",
+    page_title="AbrazoIA",
+    page_icon="🤍",
     layout="wide"
 )
+
+# ------------------------------------------------------------
+# Identidad visual AbrazoIA
+# ------------------------------------------------------------
+BRAND_NAME = "AbrazoIA"
+BRAND_TAGLINE = "Escucha. Entiende. Acompaña. Inspira."
+BRAND_DESCRIPTION = (
+    "Acompañamiento emocional con IA para niños, padres y orientación guiada."
+)
+BRAND_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "abrazoia_logo.png"
+BRAND_COLORS = {
+    "coral": "#F58C8C",
+    "coral_dark": "#EE6F73",
+    "peach": "#F6A77A",
+    "lilac": "#B59AE8",
+    "purple": "#6D63B5",
+    "sky": "#7DB7F2",
+    "background": "#F7F8FC",
+}
+
 # ============================================================
 # Reinicio seguro de sesión
 # Permite limpiar el estado viejo de Streamlit entrando con:
@@ -263,6 +291,46 @@ def svg_to_data_uri(svg: str) -> str:
         str: data URI
     """
     return f"data:image/svg+xml;utf8,{quote(svg)}"
+
+
+# ------------------------------------------------------------
+# Render de marca AbrazoIA
+# ------------------------------------------------------------
+def render_brand_header_web() -> None:
+    """
+    Encabezado principal de la marca para pantallas públicas.
+    """
+    logo_col, text_col = st.columns([0.28, 0.72], gap="large")
+
+    with logo_col:
+        if BRAND_LOGO_PATH.exists():
+            st.image(str(BRAND_LOGO_PATH), width=185)
+
+    with text_col:
+        st.markdown(
+            f'''
+            <div class="brand-title">{BRAND_NAME}</div>
+            <div class="brand-tagline">{BRAND_TAGLINE}</div>
+            <div class="brand-description">{BRAND_DESCRIPTION}</div>
+            ''',
+            unsafe_allow_html=True,
+        )
+
+
+def render_sidebar_brand_web() -> None:
+    """
+    Marca compacta para el sidebar.
+    """
+    if BRAND_LOGO_PATH.exists():
+        st.image(str(BRAND_LOGO_PATH), width=150)
+
+    st.markdown(
+        f'''
+        <div class="brand-mini-title">{BRAND_NAME}</div>
+        <div class="brand-mini-tagline">{BRAND_TAGLINE}</div>
+        ''',
+        unsafe_allow_html=True,
+    )
 
 
 # ------------------------------------------------------------
@@ -418,6 +486,57 @@ def aplicar_estilos() -> None:
                 color: {text_muted};
                 font-size: 1rem;
                 margin-bottom: 1.1rem;
+            }}
+
+
+            .brand-title {{
+                font-size: 2.8rem;
+                font-weight: 900;
+                line-height: 1.05;
+                margin-bottom: 0.15rem;
+                background: linear-gradient(90deg, #F58C8C, #B59AE8, #7DB7F2);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }}
+
+            .brand-tagline {{
+                color: #EE6F73;
+                font-weight: 800;
+                font-size: 1.05rem;
+                margin-top: 0.20rem;
+                margin-bottom: 0.35rem;
+            }}
+
+            .brand-description {{
+                color: {text_muted};
+                line-height: 1.55;
+                margin-bottom: 1.1rem;
+            }}
+
+            .brand-mini-title {{
+                font-size: 1.25rem;
+                font-weight: 900;
+                color: #6D63B5;
+                text-align: center;
+                margin-top: 0.35rem;
+            }}
+
+            .brand-mini-tagline {{
+                font-size: 0.82rem;
+                font-weight: 700;
+                color: #EE6F73;
+                text-align: center;
+                line-height: 1.35;
+                margin-bottom: 0.5rem;
+            }}
+
+            .brand-auth-card {{
+                background: linear-gradient(135deg, rgba(245,140,140,0.16), rgba(181,154,232,0.14), rgba(125,183,242,0.16));
+                border: 1px solid rgba(181,154,232,0.24);
+                border-radius: 22px;
+                padding: 18px 20px;
+                margin-bottom: 18px;
             }}
 
             .hero-card {{
@@ -2782,16 +2901,12 @@ def render_auth_screen() -> None:
     """
     st.markdown('<div class="auth-shell">', unsafe_allow_html=True)
 
-    st.markdown('<div class="main-title">Amigo Imaginario Neurodivergente</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="main-subtitle">Fase 17 · Login compartido web / móvil + fallback Google</div>',
-        unsafe_allow_html=True
-    )
+    render_brand_header_web()
 
     st.markdown(
         """
-        <div class="hero-card">
-            <div class="hero-title">Entra como quieras</div>
+        <div class="brand-auth-card">
+            <div class="hero-title">Entra a tu espacio de acompañamiento</div>
             <div class="hero-text">
                 Puedes usar tu cuenta compartida entre web y móvil o entrar con Google.
                 Si es tu primera vez con Google, tu cuenta local se creará automáticamente.
@@ -2809,6 +2924,21 @@ def render_auth_screen() -> None:
         </div>
         """,
         unsafe_allow_html=True
+    )
+
+    if "accepted_terms_web" not in st.session_state:
+        st.session_state.accepted_terms_web = False
+
+    with st.expander("Uso y condiciones de AbrazoIA", expanded=False):
+        st.markdown(PARENT_TERMS_TEXT)
+        st.caption(
+            "Al continuar, aceptas que la plataforma es de apoyo y orientación, "
+            "no sustituye atención médica, psicológica ni terapéutica profesional."
+        )
+
+    st.checkbox(
+        "He leído y acepto el uso y condiciones de AbrazoIA",
+        key="accepted_terms_web",
     )
 
     col_info, col_auth = st.columns([1.05, 1.25], gap="large")
@@ -2833,11 +2963,11 @@ def render_auth_screen() -> None:
         st.markdown("### Acceso con Google")
         st.caption("Google entra en modo local de respaldo mientras terminamos la sincronización completa con API.")
 
-        st.button(
-            "Continuar con Google",
-            width="stretch",
-            on_click=st.login
-        )
+        if st.button("Continuar con Google", width="stretch"):
+            if not st.session_state.get("accepted_terms_web"):
+                st.error("Debes leer y aceptar el uso y condiciones para continuar.")
+            else:
+                st.login()
 
     with col_auth:
         tab_login, tab_register = st.tabs(["Iniciar sesión", "Crear cuenta"])
@@ -2863,6 +2993,8 @@ def render_auth_screen() -> None:
                             st.error("Escribe tu usuario.")
                         elif not password:
                             st.error("Escribe tu contraseña.")
+                        elif not st.session_state.get("accepted_terms_web"):
+                            st.error("Debes leer y aceptar el uso y condiciones para continuar.")
                         else:
                             auth = login_web_user(username, password)
                             iniciar_sesion(
@@ -2909,6 +3041,8 @@ def render_auth_screen() -> None:
                             st.error("El nombre de usuario debe tener al menos 3 caracteres.")
                         elif len(password) < 8:
                             st.error("La contraseña debe tener al menos 8 caracteres.")
+                        elif not st.session_state.get("accepted_terms_web"):
+                            st.error("Debes leer y aceptar el uso y condiciones para crear tu cuenta.")
                         else:
                             auth = register_web_user(display_name, username, password)
                             iniciar_sesion(
@@ -2985,7 +3119,10 @@ def procesar_mensaje_chat(
                     st.error(f"No se pudo enviar el mensaje: {error}")
                     return
 
-            st.markdown(assistant_message["content"])
+            if result.get("blocked_by_safety"):
+                st.warning(assistant_message["content"])
+            else:
+                st.markdown(assistant_message["content"])
 
         st.session_state.mensajes.append({
             "id": user_message.get("id"),
@@ -3034,6 +3171,50 @@ def procesar_mensaje_chat(
 
     with st.chat_message("user"):
         st.markdown(mensaje_usuario)
+
+    # --------------------------------------------------------
+    # Filtro parental local para usuarios niño cuando no se usa
+    # el backend compartido. Evita llamar al modelo y registra
+    # alerta para el padre/tutor vinculado.
+    # --------------------------------------------------------
+    current_user_for_safety = {
+        "id": user_id,
+        "role": st.session_state.get("user_role", "child"),
+        "is_admin": st.session_state.get("is_admin", False),
+    }
+
+    if should_apply_child_safety_filter(current_user_for_safety, modulo_actual):
+        safety_result = analyze_content_safety(mensaje_usuario)
+
+        if safety_result.get("is_blocked"):
+            record_blocked_content_event(
+                user_id=user_id,
+                module=modulo_actual,
+                conversation_id=conversation_id,
+                original_content=mensaje_usuario,
+                safety_result=safety_result,
+            )
+
+            respuesta_segura = safety_result["user_message"]
+
+            with st.chat_message("assistant"):
+                st.warning(respuesta_segura)
+
+            assistant_message_id = add_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=respuesta_segura
+            )
+
+            st.session_state.mensajes.append({
+                "id": assistant_message_id,
+                "role": "assistant",
+                "content": respuesta_segura
+            })
+
+            cargar_conversacion(conversation_id, user_id)
+            st.rerun()
+            return
 
     if not puede_enviar:
         respuesta = build_no_tokens_assistant_message(user_id)
@@ -4314,6 +4495,9 @@ def render_app() -> None:
     # Sidebar
     # --------------------------------------------------------
     with st.sidebar:
+        render_sidebar_brand_web()
+        st.divider()
+
         st.subheader("Tu sesión")
         st.write(f"**{display_name}**")
 
@@ -5057,6 +5241,7 @@ try:
 
     # Inicializa tablas de seguimiento, mensajes de apoyo y contactos
     initialize_support_schema()
+    initialize_safety_schema()
 
     # --------------------------------------------------------
     # Validar configuración general del proyecto

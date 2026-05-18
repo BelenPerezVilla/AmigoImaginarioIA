@@ -18,6 +18,15 @@ from database.chat_db import (
     update_friend_profile,
     update_imaginary_friend_profile,
 )
+
+# Funciones para términos y condiciones
+from database.safety_db import (
+    TERMS_VERSION,
+    accept_terms,
+    get_terms_for_role,
+    has_accepted_terms,
+)
+
 from mobile_backend.app.core.deps import get_current_user
 from mobile_backend.app.core.security import create_access_token
 from mobile_backend.app.schemas import (
@@ -29,6 +38,9 @@ from mobile_backend.app.schemas import (
     UpdateImaginaryFriendAvatarRequest,
     LegalNoticeOut,
     UserOut,
+    AcceptTermsRequest,
+    TermsOut,
+    TermsStatusOut,
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -158,7 +170,71 @@ def me(current_user: dict = Depends(get_current_user)) -> UserOut:
 def legal_notice() -> LegalNoticeOut:
     return LegalNoticeOut(text=LEGAL_NOTICE_TEXT)
 
+# ------------------------------------------------------------
+# Términos públicos por rol
+# ------------------------------------------------------------
+@router.get("/terms", response_model=TermsOut)
+def public_terms(role: str = "child") -> TermsOut:
+    """
+    Devuelve los términos y condiciones según el rol indicado.
+    Sirve para mostrar el texto antes de iniciar sesión o registrarse.
+    """
+    terms = get_terms_for_role(role)
 
+    return TermsOut(
+        text=terms["text"],
+        version=terms["version"],
+        role=terms["role"],
+    )
+
+
+# ------------------------------------------------------------
+# Estado de aceptación de términos del usuario actual
+# ------------------------------------------------------------
+@router.get("/me/terms/status", response_model=TermsStatusOut)
+def my_terms_status(
+    current_user: dict = Depends(get_current_user),
+) -> TermsStatusOut:
+    """
+    Indica si el usuario ya aceptó la versión vigente de términos.
+    """
+    return TermsStatusOut(
+        accepted=has_accepted_terms(current_user["id"], TERMS_VERSION),
+        version=TERMS_VERSION,
+        role=current_user.get("role", "child"),
+    )
+
+
+# ------------------------------------------------------------
+# Guardar aceptación de términos
+# ------------------------------------------------------------
+@router.post("/me/terms/accept", response_model=TermsStatusOut)
+def accept_my_terms(
+    payload: AcceptTermsRequest,
+    current_user: dict = Depends(get_current_user),
+) -> TermsStatusOut:
+    """
+    Guarda la aceptación de términos de uso del usuario autenticado.
+    """
+    if payload.accepted is False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Debes aceptar los términos para continuar.",
+        )
+
+    version = payload.version or TERMS_VERSION
+
+    result = accept_terms(
+        user_id=current_user["id"],
+        role=current_user.get("role"),
+        version=version,
+    )
+
+    return TermsStatusOut(
+        accepted=bool(result.get("accepted")),
+        version=result.get("version", TERMS_VERSION),
+        role=result.get("role", current_user.get("role", "child")),
+    )
 # ------------------------------------------------------------
 # Actualizar preferencias del amigo imaginario
 # ------------------------------------------------------------
